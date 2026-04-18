@@ -385,6 +385,71 @@ async function generateExplanation(m: MarketSnapshot, riskScore: number, verdict
   }
 }
 
+// ---------- Rate limiting ----------
+const DAILY_LIMIT = 3;
+
+async function hashClient(ip: string): Promise<string> {
+  const salt = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "gladys-fallback-salt";
+  const data = new TextEncoder().encode(`${ip}:${salt}`);
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function getClientIp(req: Request): string {
+  const fwd = req.headers.get("x-forwarded-for");
+  if (fwd) return fwd.split(",")[0].trim();
+  return req.headers.get("x-real-ip") ?? "unknown";
+}
+
+async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean; remaining: number }> {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceKey) {
+    console.error("Missing Supabase env for rate limiting");
+    return { allowed: true, remaining: DAILY_LIMIT };
+  }
+
+  const ip = getClientIp(req);
+  const clientHash = await hashClient(ip);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const headers = {
+    apikey: serviceKey,
+    Authorization: `Bearer ${serviceKey}`,
+    "Content-Type": "application/json",
+    Prefer: "return=representation,resolution=merge-duplicates",
+  };
+
+  // Read current count
+  const getR = await fetch(
+    `${supabaseUrl}/rest/v1/scan_usage?client_hash=eq.${clientHash}&usage_date=eq.${today}&select=count`,
+    { headers },
+  );
+  const rows = getR.ok ? await getR.json() : [];
+  const current: number = rows?.[0]?.count ?? 0;
+
+  if (current >= DAILY_LIMIT) {
+    return { allowed: false, remaining: 0 };
+  }
+
+  // Upsert incremented count
+  const upR = await fetch(`${supabaseUrl}/rest/v1/scan_usage?on_conflict=client_hash,usage_date`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      client_hash: clientHash,
+      usage_date: today,
+      count: current + 1,
+      updated_at: new Date().toISOString(),
+    }),
+  });
+  if (!upR.ok) {
+    console.error("scan_usage upsert failed:", upR.status, await upR.text());
+  }
+
+  return { allowed: true, remaining: Math.max(0, DAILY_LIMIT - (current + 1)) };
+}
+
 // ---------- Handler ----------
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -396,6 +461,15 @@ Deno.serve(async (req) => {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    // Server-side rate limit (cannot be bypassed by clearing localStorage)
+    const quota = await checkAndIncrementQuota(req);
+    if (!quota.allowed) {
+      return new Response(
+        JSON.stringify({ error: "Daily scan limit reached. Please come back tomorrow or upgrade." }),
+        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
     }
 
     const market = await gatherMarketData(input);
@@ -417,6 +491,7 @@ Deno.serve(async (req) => {
         whyPeopleBuy: ai.whyPeopleBuy,
         whatCouldGoWrong: ai.whatCouldGoWrong,
       },
+      remainingScans: quota.remaining,
       scannedAt: new Date().toISOString(),
     };
 
@@ -424,11 +499,11 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
+    // Log full detail server-side; return generic message to client
     console.error("scan-token error:", e);
-    const msg = e instanceof Error ? e.message : "Unknown error";
-    return new Response(JSON.stringify({ error: msg }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: "An unexpected error occurred. Please try again." }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   }
 });
