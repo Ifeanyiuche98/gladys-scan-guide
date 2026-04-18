@@ -34,7 +34,8 @@ const Index = () => {
       if (data?.error) throw new Error(data.error);
 
       recordScan();
-      setRemaining(getRemainingScans());
+      const serverRemaining = (data as { remainingScans?: number })?.remainingScans;
+      setRemaining(typeof serverRemaining === "number" ? serverRemaining : getRemainingScans());
       setResult(data as ScanResult);
       setStatus("result");
     } catch (e) {
