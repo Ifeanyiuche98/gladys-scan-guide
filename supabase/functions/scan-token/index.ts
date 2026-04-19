@@ -54,14 +54,27 @@ function parseInput(raw: string): { kind: "address" | "url" | "name"; value: str
 }
 
 // ---------- Data fetchers ----------
+// Fetch with a hard timeout so one slow upstream API can't hang the whole edge function.
+async function fetchWithTimeout(url: string, ms = 6000): Promise<Response | null> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { signal: ctrl.signal });
+  } catch (e) {
+    console.warn("fetch failed/timeout:", url, (e as Error).message);
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 async function fetchDexscreenerByAddress(address: string) {
   try {
-    const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
-    if (!r.ok) return null;
+    const r = await fetchWithTimeout(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+    if (!r || !r.ok) return null;
     const d = await r.json();
     const pairs = (d?.pairs ?? []) as any[];
     if (!pairs.length) return null;
-    // Pick highest-liquidity pair
     pairs.sort((a, b) => (b?.liquidity?.usd ?? 0) - (a?.liquidity?.usd ?? 0));
     return pairs[0];
   } catch (e) {
@@ -72,8 +85,8 @@ async function fetchDexscreenerByAddress(address: string) {
 
 async function fetchDexscreenerByPair(pairAddress: string) {
   try {
-    const r = await fetch(`https://api.dexscreener.com/latest/dex/pairs/search?q=${pairAddress}`);
-    if (!r.ok) return null;
+    const r = await fetchWithTimeout(`https://api.dexscreener.com/latest/dex/pairs/search?q=${pairAddress}`);
+    if (!r || !r.ok) return null;
     const d = await r.json();
     return d?.pairs?.[0] ?? null;
   } catch {
@@ -83,8 +96,8 @@ async function fetchDexscreenerByPair(pairAddress: string) {
 
 async function fetchCoinGeckoSearch(query: string) {
   try {
-    const r = await fetch(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(query)}`);
-    if (!r.ok) return null;
+    const r = await fetchWithTimeout(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(query)}`);
+    if (!r || !r.ok) return null;
     const d = await r.json();
     return d?.coins?.[0] ?? null;
   } catch {
@@ -94,10 +107,10 @@ async function fetchCoinGeckoSearch(query: string) {
 
 async function fetchCoinGeckoCoin(id: string) {
   try {
-    const r = await fetch(
+    const r = await fetchWithTimeout(
       `https://api.coingecko.com/api/v3/coins/${id}?localization=false&tickers=false&community_data=false&developer_data=false`,
     );
-    if (!r.ok) return null;
+    if (!r || !r.ok) return null;
     return await r.json();
   } catch {
     return null;
