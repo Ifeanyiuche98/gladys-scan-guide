@@ -403,7 +403,7 @@ async function generateExplanation(m: MarketSnapshot, riskScore: number, verdict
 }
 
 // ---------- Rate limiting ----------
-const DAILY_LIMIT = 3;
+const DAILY_LIMIT = 6;
 
 async function hashClient(ip: string): Promise<string> {
   const salt = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "gladys-fallback-salt";
