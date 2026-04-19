@@ -331,14 +331,17 @@ async function generateExplanation(m: MarketSnapshot, riskScore: number, verdict
     "Be honest about risk without being preachy. Tone: protective, calm, smart friend.";
 
   try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
     const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
+      signal: ctrl.signal,
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: "google/gemini-2.5-flash",
         messages: [
           { role: "system", content: sys },
           {
@@ -372,6 +375,7 @@ async function generateExplanation(m: MarketSnapshot, riskScore: number, verdict
         tool_choice: { type: "function", function: { name: "explain_token" } },
       }),
     });
+    clearTimeout(timer);
 
     if (!r.ok) {
       const txt = await r.text();
