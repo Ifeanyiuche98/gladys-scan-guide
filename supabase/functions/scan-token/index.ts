@@ -484,8 +484,12 @@ Deno.serve(async (req) => {
     const quota = await checkAndIncrementQuota(req);
     if (!quota.allowed) {
       return new Response(
-        JSON.stringify({ error: "Daily scan limit reached. Please come back tomorrow or upgrade." }),
-        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        JSON.stringify({
+          error: "Daily scan limit reached. Please come back tomorrow or upgrade.",
+          rateLimited: true,
+          remainingScans: 0,
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
