@@ -22,6 +22,10 @@ function read(): Usage {
   }
 }
 
+function write(count: number) {
+  localStorage.setItem(KEY, JSON.stringify({ date: today(), count }));
+}
+
 export function getRemainingScans(): number {
   return Math.max(0, LIMIT - read().count);
 }
@@ -32,8 +36,17 @@ export function canScan(): boolean {
 
 export function recordScan(): void {
   const u = read();
-  const next: Usage = { date: today(), count: u.count + 1 };
-  localStorage.setItem(KEY, JSON.stringify(next));
+  write(u.count + 1);
+}
+
+/** Sync client counter from authoritative server `remainingScans`. */
+export function syncRemaining(remaining: number): void {
+  const used = Math.max(0, LIMIT - Math.max(0, Math.min(LIMIT, remaining)));
+  write(used);
+}
+
+export function markLimitReached(): void {
+  write(LIMIT);
 }
 
 export const SCAN_LIMIT = LIMIT;

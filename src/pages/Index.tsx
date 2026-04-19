@@ -4,7 +4,7 @@ import { ScanInput } from "@/components/gladys/ScanInput";
 import { Loader } from "@/components/gladys/Loader";
 import { Results } from "@/components/gladys/Results";
 import { UpgradeModal } from "@/components/gladys/UpgradeModal";
-import { canScan, recordScan, getRemainingScans } from "@/lib/scan-limit";
+import { canScan, recordScan, getRemainingScans, syncRemaining, markLimitReached } from "@/lib/scan-limit";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import type { ScanResult } from "@/lib/scan-types";
@@ -31,11 +31,26 @@ const Index = () => {
       });
 
       if (error) throw error;
+
+      // Server-enforced rate limit (returned as 200 with rateLimited flag)
+      if (data?.rateLimited) {
+        markLimitReached();
+        setRemaining(0);
+        setStatus("idle");
+        setShowUpgrade(true);
+        return;
+      }
+
       if (data?.error) throw new Error(data.error);
 
-      recordScan();
       const serverRemaining = (data as { remainingScans?: number })?.remainingScans;
-      setRemaining(typeof serverRemaining === "number" ? serverRemaining : getRemainingScans());
+      if (typeof serverRemaining === "number") {
+        syncRemaining(serverRemaining);
+        setRemaining(serverRemaining);
+      } else {
+        recordScan();
+        setRemaining(getRemainingScans());
+      }
       setResult(data as ScanResult);
       setStatus("result");
     } catch (e) {
