@@ -2,6 +2,7 @@ import type { ScanResult } from "@/lib/scan-types";
 import { TokenSummary } from "./TokenSummary";
 import { RiskScore } from "./RiskScore";
 import { OpportunitySignal } from "./OpportunitySignal";
+import { RedFlags } from "./RedFlags";
 import { BeginnerMode } from "./BeginnerMode";
 import { VerdictBanner } from "./Verdict";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ export const Results = ({ result, onScanAnother }: Props) => (
     <VerdictBanner verdict={result.verdict} reason={result.verdictReason} />
     <TokenSummary result={result} />
     <RiskScore score={result.riskScore} breakdown={result.riskBreakdown} />
+    <RedFlags result={result} />
     <OpportunitySignal tag={result.opportunity.tag} reason={result.opportunity.reason} />
     <BeginnerMode explainer={result.explainer} />
 
