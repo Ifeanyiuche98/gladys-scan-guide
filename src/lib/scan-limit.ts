@@ -1,5 +1,5 @@
 const KEY = "gladys_scan_usage_v1";
-const LIMIT = 3;
+const LIMIT = 6;
 
 interface Usage {
   date: string; // YYYY-MM-DD
