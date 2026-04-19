@@ -54,14 +54,27 @@ function parseInput(raw: string): { kind: "address" | "url" | "name"; value: str
 }
 
 // ---------- Data fetchers ----------
+// Fetch with a hard timeout so one slow upstream API can't hang the whole edge function.
+async function fetchWithTimeout(url: string, ms = 6000): Promise<Response | null> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { signal: ctrl.signal });
+  } catch (e) {
+    console.warn("fetch failed/timeout:", url, (e as Error).message);
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 async function fetchDexscreenerByAddress(address: string) {
   try {
-    const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
-    if (!r.ok) return null;
+    const r = await fetchWithTimeout(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+    if (!r || !r.ok) return null;
     const d = await r.json();
     const pairs = (d?.pairs ?? []) as any[];
     if (!pairs.length) return null;
-    // Pick highest-liquidity pair
     pairs.sort((a, b) => (b?.liquidity?.usd ?? 0) - (a?.liquidity?.usd ?? 0));
     return pairs[0];
   } catch (e) {
@@ -72,8 +85,8 @@ async function fetchDexscreenerByAddress(address: string) {
 
 async function fetchDexscreenerByPair(pairAddress: string) {
   try {
-    const r = await fetch(`https://api.dexscreener.com/latest/dex/pairs/search?q=${pairAddress}`);
-    if (!r.ok) return null;
+    const r = await fetchWithTimeout(`https://api.dexscreener.com/latest/dex/pairs/search?q=${pairAddress}`);
+    if (!r || !r.ok) return null;
     const d = await r.json();
     return d?.pairs?.[0] ?? null;
   } catch {
@@ -83,8 +96,8 @@ async function fetchDexscreenerByPair(pairAddress: string) {
 
 async function fetchCoinGeckoSearch(query: string) {
   try {
-    const r = await fetch(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(query)}`);
-    if (!r.ok) return null;
+    const r = await fetchWithTimeout(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(query)}`);
+    if (!r || !r.ok) return null;
     const d = await r.json();
     return d?.coins?.[0] ?? null;
   } catch {
@@ -94,10 +107,10 @@ async function fetchCoinGeckoSearch(query: string) {
 
 async function fetchCoinGeckoCoin(id: string) {
   try {
-    const r = await fetch(
+    const r = await fetchWithTimeout(
       `https://api.coingecko.com/api/v3/coins/${id}?localization=false&tickers=false&community_data=false&developer_data=false`,
     );
-    if (!r.ok) return null;
+    if (!r || !r.ok) return null;
     return await r.json();
   } catch {
     return null;
@@ -318,14 +331,17 @@ async function generateExplanation(m: MarketSnapshot, riskScore: number, verdict
     "Be honest about risk without being preachy. Tone: protective, calm, smart friend.";
 
   try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
     const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
+      signal: ctrl.signal,
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: "google/gemini-2.5-flash",
         messages: [
           { role: "system", content: sys },
           {
@@ -359,6 +375,7 @@ async function generateExplanation(m: MarketSnapshot, riskScore: number, verdict
         tool_choice: { type: "function", function: { name: "explain_token" } },
       }),
     });
+    clearTimeout(timer);
 
     if (!r.ok) {
       const txt = await r.text();
@@ -499,11 +516,16 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
-    // Log full detail server-side; return generic message to client
+    // Log full detail server-side. Return 200 with a structured error so the
+    // Supabase client SDK (which throws on non-2xx and discards the body) can
+    // surface a friendly message instead of a generic crash.
     console.error("scan-token error:", e);
     return new Response(
-      JSON.stringify({ error: "An unexpected error occurred. Please try again." }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      JSON.stringify({
+        error: "We couldn't scan that token right now. Try again in a moment.",
+        fallback: true,
+      }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 });
