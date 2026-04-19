@@ -4,7 +4,7 @@ import { ScanInput } from "@/components/gladys/ScanInput";
 import { Loader } from "@/components/gladys/Loader";
 import { Results } from "@/components/gladys/Results";
 import { UpgradeModal } from "@/components/gladys/UpgradeModal";
-import { canScan, recordScan, getRemainingScans, syncRemaining, markLimitReached } from "@/lib/scan-limit";
+import { canScan, recordScan, getRemainingScans, syncRemaining, markLimitReached, SCAN_LIMIT } from "@/lib/scan-limit";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import type { ScanResult } from "@/lib/scan-types";
@@ -74,7 +74,7 @@ const Index = () => {
       <header className="container max-w-3xl pt-6 pb-4 flex items-center justify-between">
         <Logo />
         <div className="text-xs text-muted-foreground">
-          <span className="text-gold font-semibold">{remaining}</span> / 3 scans today
+          <span className="text-gold font-semibold">{remaining}</span> / {SCAN_LIMIT} scans today
         </div>
       </header>
 
