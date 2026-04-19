@@ -16,7 +16,7 @@ Built for beginner-to-intermediate crypto users who want clarity, not hype.
 - 🧠 **Beginner Mode** — AI-generated plain-English explanations (Lovable AI / Gemini)
 - ⚖️ **Final verdict** — color-coded **Safe / Caution / Avoid** banner
 - 📊 **Live market data** — pulls liquidity, volume, and holder data from CoinGecko & Dexscreener
-- 🔒 **Server-side rate limiting** — 3 free scans per day per IP, enforced in the backend
+- 🔒 **Server-side rate limiting** — 6 free scans per day per IP, enforced in the backend
 - 📱 **Mobile-first** — premium dark theme with gold accents
 
 ---
