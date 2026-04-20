@@ -404,21 +404,40 @@ async function generateExplanation(m: MarketSnapshot, riskScore: number, verdict
 
 // ---------- Rate limiting ----------
 const DAILY_LIMIT = 6;
+const BURST_WINDOW_MS = 3_000; // min gap between scans from same client
+const burstMap = new Map<string, number>();
 
-async function hashClient(ip: string): Promise<string> {
-  const salt = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "gladys-fallback-salt";
-  const data = new TextEncoder().encode(`${ip}:${salt}`);
+async function hashClient(identifier: string): Promise<string> {
+  // Use a dedicated, non-sensitive salt. Never reuse the service role key for hashing.
+  const salt = Deno.env.get("RATE_LIMIT_SALT") ?? "gladys-default-salt-v1";
+  const data = new TextEncoder().encode(`${identifier}:${salt}`);
   const buf = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function getClientIp(req: Request): string {
-  const fwd = req.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
-  return req.headers.get("x-real-ip") ?? "unknown";
+/**
+ * Derive a client identifier from trusted infrastructure headers only.
+ * Supabase Edge Functions sit behind Cloudflare, which sets `cf-connecting-ip`
+ * with the real client IP and strips client-supplied versions of it. We prefer
+ * that, then fall back to the leftmost entry of `x-forwarded-for` (set by the
+ * Supabase/Cloudflare edge, not the client). Any client-supplied `x-real-ip`
+ * is ignored because it can be trivially spoofed.
+ *
+ * As an extra layer we mix in the user-agent so two devices behind the same
+ * NAT don't share a counter and a single attacker can't trivially evade the
+ * limit by rotating just one signal.
+ */
+function getClientFingerprint(req: Request): string {
+  const cfIp = req.headers.get("cf-connecting-ip");
+  const xff = req.headers.get("x-forwarded-for");
+  // Trust only the leftmost XFF entry as set by the platform edge.
+  const xffIp = xff ? xff.split(",")[0].trim() : "";
+  const ip = (cfIp || xffIp || "unknown").toLowerCase();
+  const ua = (req.headers.get("user-agent") ?? "").slice(0, 120);
+  return `${ip}|${ua}`;
 }
 
-async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean; remaining: number }> {
+async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean; remaining: number; reason?: "daily" | "burst" }> {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!supabaseUrl || !serviceKey) {
@@ -426,9 +445,22 @@ async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean;
     return { allowed: true, remaining: DAILY_LIMIT };
   }
 
-  const ip = getClientIp(req);
-  const clientHash = await hashClient(ip);
+  const fingerprint = getClientFingerprint(req);
+  const clientHash = await hashClient(fingerprint);
   const today = new Date().toISOString().slice(0, 10);
+
+  // Burst guard: reject rapid repeat calls from the same fingerprint.
+  const now = Date.now();
+  const last = burstMap.get(clientHash) ?? 0;
+  if (now - last < BURST_WINDOW_MS) {
+    return { allowed: false, remaining: -1, reason: "burst" };
+  }
+  burstMap.set(clientHash, now);
+  if (burstMap.size > 5000) {
+    for (const [k, t] of burstMap) {
+      if (now - t > 60_000) burstMap.delete(k);
+    }
+  }
 
   const headers = {
     apikey: serviceKey,
@@ -437,7 +469,6 @@ async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean;
     Prefer: "return=representation,resolution=merge-duplicates",
   };
 
-  // Read current count
   const getR = await fetch(
     `${supabaseUrl}/rest/v1/scan_usage?client_hash=eq.${clientHash}&usage_date=eq.${today}&select=count`,
     { headers },
@@ -446,10 +477,9 @@ async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean;
   const current: number = rows?.[0]?.count ?? 0;
 
   if (current >= DAILY_LIMIT) {
-    return { allowed: false, remaining: 0 };
+    return { allowed: false, remaining: 0, reason: "daily" };
   }
 
-  // Upsert incremented count
   const upR = await fetch(`${supabaseUrl}/rest/v1/scan_usage?on_conflict=client_hash,usage_date`, {
     method: "POST",
     headers,
@@ -461,7 +491,8 @@ async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean;
     }),
   });
   if (!upR.ok) {
-    console.error("scan_usage upsert failed:", upR.status, await upR.text());
+    // Avoid logging response body — may contain infra detail.
+    console.error("scan_usage upsert failed with status:", upR.status);
   }
 
   return { allowed: true, remaining: Math.max(0, DAILY_LIMIT - (current + 1)) };
@@ -483,11 +514,15 @@ Deno.serve(async (req) => {
     // Server-side rate limit (cannot be bypassed by clearing localStorage)
     const quota = await checkAndIncrementQuota(req);
     if (!quota.allowed) {
+      const isBurst = quota.reason === "burst";
       return new Response(
         JSON.stringify({
-          error: "Daily scan limit reached. Please come back tomorrow or upgrade.",
+          error: isBurst
+            ? "Slow down a moment — too many scans in a row."
+            : "Daily scan limit reached. Please come back tomorrow or upgrade.",
           rateLimited: true,
-          remainingScans: 0,
+          burst: isBurst,
+          remainingScans: isBurst ? undefined : 0,
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
