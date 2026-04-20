@@ -14,6 +14,15 @@ function buildReasons(result: ScanResult): Reason[] {
   const { token, riskBreakdown, verdict } = result;
   const reasons: Reason[] = [];
 
+  // Major asset heuristic: globally liquid across CEX+DEX, so missing
+  // single-pool liquidity data is NOT a concern.
+  const isMajorAsset =
+    (token.marketCap ?? 0) >= 1_000_000_000 &&
+    (token.volume24h ?? 0) >= 10_000_000;
+  const isLargeAsset =
+    (token.marketCap ?? 0) >= 100_000_000 &&
+    (token.volume24h ?? 0) >= 1_000_000;
+
   // Liquidity
   if (token.liquidityUsd !== undefined) {
     if (token.liquidityUsd < 25_000) {
@@ -25,6 +34,8 @@ function buildReasons(result: ScanResult): Reason[] {
     } else if (verdict === "SAFE-ISH") {
       reasons.push({ weight: 30, text: "Healthy liquidity makes buying and selling easier" });
     }
+  } else if (isMajorAsset || isLargeAsset) {
+    reasons.push({ weight: 35, text: "Widely traded across major exchanges with deep global liquidity" });
   } else if (riskBreakdown.liquidity < 60) {
     reasons.push({ weight: 60, text: "Liquidity data is unclear or limited" });
   }
