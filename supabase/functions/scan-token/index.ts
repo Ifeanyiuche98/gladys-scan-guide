@@ -514,11 +514,15 @@ Deno.serve(async (req) => {
     // Server-side rate limit (cannot be bypassed by clearing localStorage)
     const quota = await checkAndIncrementQuota(req);
     if (!quota.allowed) {
+      const isBurst = quota.reason === "burst";
       return new Response(
         JSON.stringify({
-          error: "Daily scan limit reached. Please come back tomorrow or upgrade.",
+          error: isBurst
+            ? "Slow down a moment — too many scans in a row."
+            : "Daily scan limit reached. Please come back tomorrow or upgrade.",
           rateLimited: true,
-          remainingScans: 0,
+          burst: isBurst,
+          remainingScans: isBurst ? undefined : 0,
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
