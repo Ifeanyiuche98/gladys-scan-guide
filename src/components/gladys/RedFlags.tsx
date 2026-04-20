@@ -33,13 +33,38 @@ function buildFlags(result: ScanResult): Flag[] {
   const { token, riskBreakdown } = result;
   const sym = token.symbol && token.symbol !== "?" ? token.symbol : token.name;
 
+  // Major / established asset heuristic: large cap + heavy daily volume.
+  // These trade across hundreds of CEX/DEX venues, so a single DEX-pool
+  // liquidity number is meaningless and should NOT trigger a warning.
+  // (e.g. SOL, ETH, BTC, BNB, XRP — CoinGecko returns no pool liquidity.)
+  const isMajorAsset =
+    (token.marketCap ?? 0) >= 1_000_000_000 &&
+    (token.volume24h ?? 0) >= 10_000_000;
+  const isLargeAsset =
+    (token.marketCap ?? 0) >= 100_000_000 &&
+    (token.volume24h ?? 0) >= 1_000_000;
+
   // --- Liquidity (use real numbers when we have them) ---
   if (token.liquidityUsd === undefined) {
-    flags.push({
-      level: "caution",
-      weight: 55,
-      message: `No liquidity data found for ${sym} — we can't confirm you'd be able to sell.`,
-    });
+    if (isMajorAsset) {
+      flags.push({
+        level: "safe",
+        weight: 15,
+        message: `${sym} trades across major exchanges with deep global liquidity — easy to buy and sell.`,
+      });
+    } else if (isLargeAsset) {
+      flags.push({
+        level: "safe",
+        weight: 12,
+        message: `${sym} is widely traded on multiple exchanges — liquidity is not a concern.`,
+      });
+    } else {
+      flags.push({
+        level: "caution",
+        weight: 55,
+        message: `No on-chain pool liquidity data found for ${sym} — verify it's listed on a reputable exchange before buying.`,
+      });
+    }
   } else if (token.liquidityUsd < 10_000) {
     flags.push({
       level: "danger",
@@ -94,7 +119,10 @@ function buildFlags(result: ScanResult): Flag[] {
   }
 
   // --- Volume vs liquidity sanity (wash-trade smell) ---
+  // Skip for major assets: their volume is global (CEX+DEX) while liquidity
+  // is one pool, so the ratio is naturally huge and meaningless.
   if (
+    !isLargeAsset &&
     token.volume24h !== undefined &&
     token.liquidityUsd !== undefined &&
     token.liquidityUsd > 5_000 &&
