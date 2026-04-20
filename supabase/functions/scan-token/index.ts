@@ -534,7 +534,14 @@ Deno.serve(async (req) => {
           burst: isBurst,
           remainingScans: isBurst ? undefined : 0,
         }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        {
+          status: 429,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+            ...(isBurst ? { "Retry-After": "3" } : {}),
+          },
+        },
       );
     }
 
