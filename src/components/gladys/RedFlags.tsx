@@ -119,7 +119,10 @@ function buildFlags(result: ScanResult): Flag[] {
   }
 
   // --- Volume vs liquidity sanity (wash-trade smell) ---
+  // Skip for major assets: their volume is global (CEX+DEX) while liquidity
+  // is one pool, so the ratio is naturally huge and meaningless.
   if (
+    !isLargeAsset &&
     token.volume24h !== undefined &&
     token.liquidityUsd !== undefined &&
     token.liquidityUsd > 5_000 &&
