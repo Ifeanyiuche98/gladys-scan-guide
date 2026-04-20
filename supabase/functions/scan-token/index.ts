@@ -408,8 +408,12 @@ const BURST_WINDOW_MS = 3_000; // min gap between scans from same client
 const burstMap = new Map<string, number>();
 
 async function hashClient(identifier: string): Promise<string> {
-  // Use a dedicated, non-sensitive salt. Never reuse the service role key for hashing.
-  const salt = Deno.env.get("RATE_LIMIT_SALT") ?? "gladys-default-salt-v1";
+  // Dedicated non-sensitive salt. NEVER use the service role key for hashing.
+  // Prefer SCAN_HASH_SALT; fall back to legacy RATE_LIMIT_SALT for compatibility.
+  const salt =
+    Deno.env.get("SCAN_HASH_SALT") ??
+    Deno.env.get("RATE_LIMIT_SALT") ??
+    "gladys-default-salt-v1";
   const data = new TextEncoder().encode(`${identifier}:${salt}`);
   const buf = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
