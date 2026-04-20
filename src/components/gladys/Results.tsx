@@ -5,6 +5,7 @@ import { OpportunitySignal } from "./OpportunitySignal";
 import { RedFlags } from "./RedFlags";
 import { BeginnerMode } from "./BeginnerMode";
 import { VerdictBanner } from "./Verdict";
+import { WhyVerdict } from "./WhyVerdict";
 import { Button } from "@/components/ui/button";
 import { RotateCw } from "lucide-react";
 
@@ -16,6 +17,7 @@ interface Props {
 export const Results = ({ result, onScanAnother }: Props) => (
   <div className="space-y-5">
     <VerdictBanner verdict={result.verdict} reason={result.verdictReason} />
+    <WhyVerdict result={result} />
     <TokenSummary result={result} />
     <RiskScore score={result.riskScore} breakdown={result.riskBreakdown} />
     <RedFlags result={result} />
