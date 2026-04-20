@@ -572,16 +572,15 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
-    // Log full detail server-side. Return 200 with a structured error so the
-    // Supabase client SDK (which throws on non-2xx and discards the body) can
-    // surface a friendly message instead of a generic crash.
+    // Log full detail server-side. Return a real 500 so monitoring and
+    // clients can distinguish failures from successes.
     console.error("scan-token error:", e);
     return new Response(
       JSON.stringify({
         error: "We couldn't scan that token right now. Try again in a moment.",
         fallback: true,
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 });
