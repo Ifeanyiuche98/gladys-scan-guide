@@ -30,15 +30,36 @@ const Index = () => {
         body: { input },
       });
 
-      if (error) throw error;
+      // Non-2xx response: supabase-js wraps it in FunctionsHttpError. Parse
+      // the JSON body to surface our structured error (e.g. 429 rate limits).
+      if (error) {
+        let payload: { error?: string; rateLimited?: boolean; burst?: boolean } | null = null;
+        const ctx = (error as { context?: { response?: Response } }).context;
+        if (ctx?.response) {
+          try {
+            payload = await ctx.response.clone().json();
+          } catch {
+            payload = null;
+          }
+        }
 
-      // Server-enforced rate limit (returned as 200 with rateLimited flag)
-      if (data?.rateLimited) {
-        markLimitReached();
-        setRemaining(0);
-        setStatus("idle");
-        setShowUpgrade(true);
-        return;
+        if (payload?.rateLimited) {
+          if (payload.burst) {
+            setStatus("idle");
+            toast({
+              title: "Slow down",
+              description: payload.error ?? "Too many scans in a row. Try again in a few seconds.",
+            });
+          } else {
+            markLimitReached();
+            setRemaining(0);
+            setStatus("idle");
+            setShowUpgrade(true);
+          }
+          return;
+        }
+
+        throw new Error(payload?.error ?? error.message ?? "Scan failed");
       }
 
       if (data?.error) throw new Error(data.error);
