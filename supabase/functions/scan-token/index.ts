@@ -408,8 +408,12 @@ const BURST_WINDOW_MS = 3_000; // min gap between scans from same client
 const burstMap = new Map<string, number>();
 
 async function hashClient(identifier: string): Promise<string> {
-  // Use a dedicated, non-sensitive salt. Never reuse the service role key for hashing.
-  const salt = Deno.env.get("RATE_LIMIT_SALT") ?? "gladys-default-salt-v1";
+  // Dedicated non-sensitive salt. NEVER use the service role key for hashing.
+  // Prefer SCAN_HASH_SALT; fall back to legacy RATE_LIMIT_SALT for compatibility.
+  const salt =
+    Deno.env.get("SCAN_HASH_SALT") ??
+    Deno.env.get("RATE_LIMIT_SALT") ??
+    "gladys-default-salt-v1";
   const data = new TextEncoder().encode(`${identifier}:${salt}`);
   const buf = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -417,21 +421,27 @@ async function hashClient(identifier: string): Promise<string> {
 
 /**
  * Derive a client identifier from trusted infrastructure headers only.
- * Supabase Edge Functions sit behind Cloudflare, which sets `cf-connecting-ip`
- * with the real client IP and strips client-supplied versions of it. We prefer
- * that, then fall back to the leftmost entry of `x-forwarded-for` (set by the
- * Supabase/Cloudflare edge, not the client). Any client-supplied `x-real-ip`
- * is ignored because it can be trivially spoofed.
  *
- * As an extra layer we mix in the user-agent so two devices behind the same
- * NAT don't share a counter and a single attacker can't trivially evade the
- * limit by rotating just one signal.
+ * Supabase Edge Functions sit behind Cloudflare, which sets `cf-connecting-ip`
+ * with the verified client IP and strips any client-supplied copy. We trust
+ * that header first.
+ *
+ * For `x-forwarded-for` we take the RIGHT-MOST entry. The platform edge
+ * appends the real connecting IP as the last hop, while any client-supplied
+ * values would appear earlier in the list and must be ignored. This prevents
+ * trivial bypass via `X-Forwarded-For: 1.2.3.4` spoofing.
+ *
+ * Spoofable headers like `x-real-ip` are ignored entirely.
+ *
+ * We also mix in the user-agent so two devices behind the same NAT don't
+ * share a counter and a single attacker can't evade the limit by rotating
+ * just one signal.
  */
 function getClientFingerprint(req: Request): string {
   const cfIp = req.headers.get("cf-connecting-ip");
   const xff = req.headers.get("x-forwarded-for");
-  // Trust only the leftmost XFF entry as set by the platform edge.
-  const xffIp = xff ? xff.split(",")[0].trim() : "";
+  // Right-most XFF entry = last trusted hop appended by the platform edge.
+  const xffIp = xff ? xff.split(",").map((s) => s.trim()).filter(Boolean).pop() ?? "" : "";
   const ip = (cfIp || xffIp || "unknown").toLowerCase();
   const ua = (req.headers.get("user-agent") ?? "").slice(0, 120);
   return `${ip}|${ua}`;
@@ -524,7 +534,14 @@ Deno.serve(async (req) => {
           burst: isBurst,
           remainingScans: isBurst ? undefined : 0,
         }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        {
+          status: 429,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+            ...(isBurst ? { "Retry-After": "3" } : {}),
+          },
+        },
       );
     }
 
@@ -555,16 +572,15 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
-    // Log full detail server-side. Return 200 with a structured error so the
-    // Supabase client SDK (which throws on non-2xx and discards the body) can
-    // surface a friendly message instead of a generic crash.
+    // Log full detail server-side. Return a real 500 so monitoring and
+    // clients can distinguish failures from successes.
     console.error("scan-token error:", e);
     return new Response(
       JSON.stringify({
         error: "We couldn't scan that token right now. Try again in a moment.",
         fallback: true,
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 });
