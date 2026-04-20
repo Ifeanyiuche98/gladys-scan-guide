@@ -404,18 +404,37 @@ async function generateExplanation(m: MarketSnapshot, riskScore: number, verdict
 
 // ---------- Rate limiting ----------
 const DAILY_LIMIT = 6;
+const BURST_WINDOW_MS = 3_000; // min gap between scans from same client
+const burstMap = new Map<string, number>();
 
-async function hashClient(ip: string): Promise<string> {
-  const salt = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "gladys-fallback-salt";
-  const data = new TextEncoder().encode(`${ip}:${salt}`);
+async function hashClient(identifier: string): Promise<string> {
+  // Use a dedicated, non-sensitive salt. Never reuse the service role key for hashing.
+  const salt = Deno.env.get("RATE_LIMIT_SALT") ?? "gladys-default-salt-v1";
+  const data = new TextEncoder().encode(`${identifier}:${salt}`);
   const buf = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function getClientIp(req: Request): string {
-  const fwd = req.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
-  return req.headers.get("x-real-ip") ?? "unknown";
+/**
+ * Derive a client identifier from trusted infrastructure headers only.
+ * Supabase Edge Functions sit behind Cloudflare, which sets `cf-connecting-ip`
+ * with the real client IP and strips client-supplied versions of it. We prefer
+ * that, then fall back to the leftmost entry of `x-forwarded-for` (set by the
+ * Supabase/Cloudflare edge, not the client). Any client-supplied `x-real-ip`
+ * is ignored because it can be trivially spoofed.
+ *
+ * As an extra layer we mix in the user-agent so two devices behind the same
+ * NAT don't share a counter and a single attacker can't trivially evade the
+ * limit by rotating just one signal.
+ */
+function getClientFingerprint(req: Request): string {
+  const cfIp = req.headers.get("cf-connecting-ip");
+  const xff = req.headers.get("x-forwarded-for");
+  // Trust only the leftmost XFF entry as set by the platform edge.
+  const xffIp = xff ? xff.split(",")[0].trim() : "";
+  const ip = (cfIp || xffIp || "unknown").toLowerCase();
+  const ua = (req.headers.get("user-agent") ?? "").slice(0, 120);
+  return `${ip}|${ua}`;
 }
 
 async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean; remaining: number }> {
