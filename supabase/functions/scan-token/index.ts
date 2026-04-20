@@ -421,21 +421,27 @@ async function hashClient(identifier: string): Promise<string> {
 
 /**
  * Derive a client identifier from trusted infrastructure headers only.
- * Supabase Edge Functions sit behind Cloudflare, which sets `cf-connecting-ip`
- * with the real client IP and strips client-supplied versions of it. We prefer
- * that, then fall back to the leftmost entry of `x-forwarded-for` (set by the
- * Supabase/Cloudflare edge, not the client). Any client-supplied `x-real-ip`
- * is ignored because it can be trivially spoofed.
  *
- * As an extra layer we mix in the user-agent so two devices behind the same
- * NAT don't share a counter and a single attacker can't trivially evade the
- * limit by rotating just one signal.
+ * Supabase Edge Functions sit behind Cloudflare, which sets `cf-connecting-ip`
+ * with the verified client IP and strips any client-supplied copy. We trust
+ * that header first.
+ *
+ * For `x-forwarded-for` we take the RIGHT-MOST entry. The platform edge
+ * appends the real connecting IP as the last hop, while any client-supplied
+ * values would appear earlier in the list and must be ignored. This prevents
+ * trivial bypass via `X-Forwarded-For: 1.2.3.4` spoofing.
+ *
+ * Spoofable headers like `x-real-ip` are ignored entirely.
+ *
+ * We also mix in the user-agent so two devices behind the same NAT don't
+ * share a counter and a single attacker can't evade the limit by rotating
+ * just one signal.
  */
 function getClientFingerprint(req: Request): string {
   const cfIp = req.headers.get("cf-connecting-ip");
   const xff = req.headers.get("x-forwarded-for");
-  // Trust only the leftmost XFF entry as set by the platform edge.
-  const xffIp = xff ? xff.split(",")[0].trim() : "";
+  // Right-most XFF entry = last trusted hop appended by the platform edge.
+  const xffIp = xff ? xff.split(",").map((s) => s.trim()).filter(Boolean).pop() ?? "" : "";
   const ip = (cfIp || xffIp || "unknown").toLowerCase();
   const ua = (req.headers.get("user-agent") ?? "").slice(0, 120);
   return `${ip}|${ua}`;
