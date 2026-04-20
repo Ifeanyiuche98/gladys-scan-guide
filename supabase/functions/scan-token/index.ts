@@ -437,7 +437,7 @@ function getClientFingerprint(req: Request): string {
   return `${ip}|${ua}`;
 }
 
-async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean; remaining: number }> {
+async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean; remaining: number; reason?: "daily" | "burst" }> {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!supabaseUrl || !serviceKey) {
@@ -445,9 +445,22 @@ async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean;
     return { allowed: true, remaining: DAILY_LIMIT };
   }
 
-  const ip = getClientIp(req);
-  const clientHash = await hashClient(ip);
+  const fingerprint = getClientFingerprint(req);
+  const clientHash = await hashClient(fingerprint);
   const today = new Date().toISOString().slice(0, 10);
+
+  // Burst guard: reject rapid repeat calls from the same fingerprint.
+  const now = Date.now();
+  const last = burstMap.get(clientHash) ?? 0;
+  if (now - last < BURST_WINDOW_MS) {
+    return { allowed: false, remaining: -1, reason: "burst" };
+  }
+  burstMap.set(clientHash, now);
+  if (burstMap.size > 5000) {
+    for (const [k, t] of burstMap) {
+      if (now - t > 60_000) burstMap.delete(k);
+    }
+  }
 
   const headers = {
     apikey: serviceKey,
@@ -456,7 +469,6 @@ async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean;
     Prefer: "return=representation,resolution=merge-duplicates",
   };
 
-  // Read current count
   const getR = await fetch(
     `${supabaseUrl}/rest/v1/scan_usage?client_hash=eq.${clientHash}&usage_date=eq.${today}&select=count`,
     { headers },
@@ -465,10 +477,9 @@ async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean;
   const current: number = rows?.[0]?.count ?? 0;
 
   if (current >= DAILY_LIMIT) {
-    return { allowed: false, remaining: 0 };
+    return { allowed: false, remaining: 0, reason: "daily" };
   }
 
-  // Upsert incremented count
   const upR = await fetch(`${supabaseUrl}/rest/v1/scan_usage?on_conflict=client_hash,usage_date`, {
     method: "POST",
     headers,
@@ -480,7 +491,8 @@ async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean;
     }),
   });
   if (!upR.ok) {
-    console.error("scan_usage upsert failed:", upR.status, await upR.text());
+    // Avoid logging response body — may contain infra detail.
+    console.error("scan_usage upsert failed with status:", upR.status);
   }
 
   return { allowed: true, remaining: Math.max(0, DAILY_LIMIT - (current + 1)) };
