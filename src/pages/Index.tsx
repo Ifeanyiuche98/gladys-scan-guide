@@ -93,7 +93,8 @@ const Index = () => {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="container max-w-3xl pt-6 pb-4 flex items-center justify-between">
-        <Logo />
+        <Logo variant="icon" size="sm" className="sm:hidden" />
+        <Logo variant="full" size="sm" className="hidden sm:block" />
         <div className="text-xs text-muted-foreground">
           <span className="text-gold font-semibold">{remaining}</span> / {SCAN_LIMIT} scans today
         </div>
@@ -103,6 +104,9 @@ const Index = () => {
         {status === "idle" && (
           <section className="pt-8 sm:pt-16 animate-fade-up">
             <div className="text-center mb-10 sm:mb-14">
+              <div className="flex justify-center mb-8">
+                <Logo variant="full" size="lg" />
+              </div>
               <h1 className="font-display font-bold text-4xl sm:text-6xl tracking-tight leading-[1.05]">
                 Scan Before
                 <br />
