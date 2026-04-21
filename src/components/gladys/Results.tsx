@@ -17,7 +17,12 @@ interface Props {
 
 export const Results = ({ result, onScanAnother }: Props) => (
   <div className="space-y-5">
-    <VerdictBanner verdict={result.verdict} reason={result.verdictReason} />
+    <div className="relative">
+      <VerdictBanner verdict={result.verdict} reason={result.verdictReason} />
+      <div className="absolute top-4 right-4">
+        <ShareResult result={result} variant="icon" />
+      </div>
+    </div>
     <WhyVerdict result={result} />
     <TokenSummary result={result} />
     <RiskScore score={result.riskScore} breakdown={result.riskBreakdown} />
@@ -25,7 +30,8 @@ export const Results = ({ result, onScanAnother }: Props) => (
     <OpportunitySignal tag={result.opportunity.tag} reason={result.opportunity.reason} />
     <BeginnerMode explainer={result.explainer} />
 
-    <div className="pt-2 pb-4 flex justify-center">
+    <div className="pt-2 pb-4 flex flex-col sm:flex-row gap-3 justify-center items-center">
+      <ShareResult result={result} />
       <Button
         onClick={onScanAnother}
         size="lg"
