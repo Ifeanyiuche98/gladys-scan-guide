@@ -6,6 +6,7 @@ import { RedFlags } from "./RedFlags";
 import { BeginnerMode } from "./BeginnerMode";
 import { VerdictBanner } from "./Verdict";
 import { WhyVerdict } from "./WhyVerdict";
+import { ShareResult } from "./ShareResult";
 import { Button } from "@/components/ui/button";
 import { RotateCw } from "lucide-react";
 
