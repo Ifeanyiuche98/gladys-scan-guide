@@ -617,14 +617,40 @@ Deno.serve(async (req) => {
       );
     }
 
-    const market = await gatherMarketData(input);
-    const { score: riskScore, breakdown } = computeRisk(market);
+    let market = await gatherMarketData(input);
+
+    // Step 1: provisional classification using whatever we already have.
+    let classification = classifyAsset(market);
+
+    // Step 2: data hierarchy. If DEX gave us a token that *could* be a major
+    // asset (had a recognizable symbol) but we lack global market cap/volume,
+    // enrich from CoinGecko so global liquidity isn't misread as "no liquidity".
+    const symbolLooksReal = market.symbol && market.symbol !== "?";
+    const looksPotentiallyMajor = symbolLooksReal && (
+      (market.marketCap ?? 0) < 1_000_000_000 || market.marketCap === undefined
+    );
+    if ((classification === "LOW" || classification === "UNKNOWN" || classification === "MID") && looksPotentiallyMajor) {
+      const enriched = await enrichWithCoinGecko(market);
+      const newCls = classifyAsset(enriched);
+      // Only adopt enrichment if it upgrades the classification or fills core data.
+      if (newCls === "MAJOR" || newCls === "MID" || (enriched.marketCap && !market.marketCap)) {
+        market = enriched;
+        classification = newCls;
+      }
+    }
+
+    const { score: riskScore, breakdown } = computeRisk(market, classification);
     const verdict = verdictFromScore(riskScore);
-    const opportunity = computeOpportunity(market, riskScore);
+    const opportunity = computeOpportunity(market, classification, riskScore);
+    const confidence = computeConfidence(market, classification);
+    const outlook = computeOutlook(market, classification, riskScore);
     const ai = await generateExplanation(market, riskScore, verdict, opportunity);
 
     const result = {
       token: market,
+      classification,
+      confidence,
+      outlook,
       riskScore,
       riskBreakdown: breakdown,
       opportunity,
