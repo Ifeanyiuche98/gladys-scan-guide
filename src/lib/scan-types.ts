@@ -1,5 +1,8 @@
 export type Verdict = "SAFE-ISH" | "CAUTION" | "AVOID";
-export type OpportunityTag = "Early Gem" | "Trending" | "Overhyped" | "Dead Zone";
+export type OpportunityTag = "Early Gem" | "Trending" | "Overhyped" | "Low Activity Zone";
+export type AssetClass = "MAJOR" | "MID" | "LOW" | "UNKNOWN";
+export type Confidence = "High" | "Medium" | "Low";
+export type Outlook = "Bullish" | "Neutral" | "Weak";
 
 export interface RiskBreakdown {
   liquidity: number;        // 0-100 (higher = safer)
@@ -21,6 +24,9 @@ export interface ScanResult {
     ageDays?: number;
     priceChange24h?: number;
   };
+  classification: AssetClass;
+  confidence: Confidence;
+  outlook: Outlook;
   riskScore: number;          // 0-100, higher = safer
   riskBreakdown: RiskBreakdown;
   opportunity: {
@@ -30,7 +36,7 @@ export interface ScanResult {
   verdict: Verdict;
   verdictReason: string;
   explainer: {
-    summary: string;          // 1-line plain English
+    summary: string;
     whatItDoes: string;
     whyPeopleBuy: string;
     whatCouldGoWrong: string;

@@ -5,7 +5,7 @@ const META: Record<OpportunityTag, { icon: typeof Flame; bg: string; text: strin
   "Early Gem": { icon: Sparkles, bg: "bg-gold/10", text: "text-gold", ring: "ring-gold/40" },
   "Trending": { icon: TrendingUp, bg: "bg-success/10", text: "text-success", ring: "ring-success/40" },
   "Overhyped": { icon: Flame, bg: "bg-warning/10", text: "text-warning", ring: "ring-warning/40" },
-  "Dead Zone": { icon: Moon, bg: "bg-muted", text: "text-muted-foreground", ring: "ring-border" },
+  "Low Activity Zone": { icon: Moon, bg: "bg-muted", text: "text-muted-foreground", ring: "ring-border" },
 };
 
 export const OpportunitySignal = ({ tag, reason }: { tag: OpportunityTag; reason: string }) => {

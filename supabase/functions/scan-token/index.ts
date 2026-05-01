@@ -9,7 +9,10 @@ const corsHeaders = {
 };
 
 type Verdict = "SAFE-ISH" | "CAUTION" | "AVOID";
-type OpportunityTag = "Early Gem" | "Trending" | "Overhyped" | "Dead Zone";
+type OpportunityTag = "Early Gem" | "Trending" | "Overhyped" | "Low Activity Zone";
+type AssetClass = "MAJOR" | "MID" | "LOW" | "UNKNOWN";
+type Confidence = "High" | "Medium" | "Low";
+type Outlook = "Bullish" | "Neutral" | "Weak";
 
 interface MarketSnapshot {
   name: string;
@@ -190,79 +193,113 @@ async function gatherMarketData(input: string): Promise<MarketSnapshot> {
   };
 }
 
-// ---------- Risk Engine ----------
+// ---------- Asset Classification (MANDATORY FIRST STEP) ----------
+function classifyAsset(m: MarketSnapshot): AssetClass {
+  const mc = m.marketCap ?? 0;
+  const vol = m.volume24h ?? 0;
+  const hasCoreData = m.marketCap !== undefined || m.volume24h !== undefined;
+
+  if (!hasCoreData) return "UNKNOWN";
+  if (mc >= 1_000_000_000 && vol >= 10_000_000) return "MAJOR";
+  if (mc >= 50_000_000 && vol >= 500_000) return "MID";
+  return "LOW";
+}
+
+// ---------- Data hierarchy enrichment ----------
+// For MAJOR/MID candidates, prefer CoinGecko global market data over a single
+// DEX pool snapshot. This prevents "no liquidity" false alarms on assets like
+// SOL/ETH/BTC that trade across many CEX/DEX venues.
+async function enrichWithCoinGecko(m: MarketSnapshot): Promise<MarketSnapshot> {
+  const query = m.symbol && m.symbol !== "?" ? m.symbol : m.name;
+  if (!query) return m;
+  const search = await fetchCoinGeckoSearch(query);
+  if (!search?.id) return m;
+  const coin = await fetchCoinGeckoCoin(search.id);
+  if (!coin) return m;
+  const md = coin.market_data ?? {};
+  const created = coin.genesis_date ? new Date(coin.genesis_date) : null;
+  const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : m.ageDays;
+  // CoinGecko is authoritative for global market cap & volume on listed assets.
+  return {
+    ...m,
+    name: m.name && m.name !== "Unknown Token" ? m.name : (coin.name ?? m.name),
+    symbol: m.symbol && m.symbol !== "?" ? m.symbol : (coin.symbol ?? m.symbol).toUpperCase(),
+    priceUsd: md.current_price?.usd ?? m.priceUsd,
+    marketCap: md.market_cap?.usd ?? m.marketCap,
+    volume24h: md.total_volume?.usd ?? m.volume24h,
+    // For globally-listed assets, leave liquidityUsd as `undefined` from CG —
+    // the classification layer treats this correctly (deep global liquidity).
+    ageDays: ageDays ?? m.ageDays,
+    priceChange24h: md.price_change_percentage_24h ?? m.priceChange24h,
+  };
+}
+
+// ---------- Risk Engine (context-aware) ----------
 function clamp(n: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, n));
 }
 
-function computeRisk(m: MarketSnapshot) {
+function computeRisk(m: MarketSnapshot, cls: AssetClass) {
+  // MAJOR assets: anchor scores high, ignore single-pool DEX gaps.
+  if (cls === "MAJOR") {
+    const change = Math.abs(m.priceChange24h ?? 0);
+    const volatility = change > 25 ? 65 : change > 10 ? 80 : 92;
+    return {
+      score: 88,
+      breakdown: { liquidity: 95, whaleConcentration: 85, contractRisk: 95, volatility },
+    };
+  }
+
+  if (cls === "MID") {
+    let score = 78;
+    const breakdown = { liquidity: 75, whaleConcentration: 70, contractRisk: 80, volatility: 75 };
+    if (m.liquidityUsd !== undefined) {
+      if (m.liquidityUsd < 100_000) { score -= 12; breakdown.liquidity = 45; }
+      else if (m.liquidityUsd < 500_000) { score -= 4; breakdown.liquidity = 65; }
+      else { breakdown.liquidity = 88; }
+    }
+    const change = Math.abs(m.priceChange24h ?? 0);
+    if (change > 50) { score -= 10; breakdown.volatility = 35; }
+    else if (change > 20) { score -= 4; breakdown.volatility = 60; }
+    else { breakdown.volatility = 82; }
+    if (m.ageDays !== undefined && m.ageDays < 30) { score -= 6; breakdown.contractRisk = 60; }
+    for (const k of Object.keys(breakdown) as (keyof typeof breakdown)[]) breakdown[k] = clamp(breakdown[k]);
+    return { score: clamp(score), breakdown };
+  }
+
+  // LOW / UNKNOWN: full risk detection
   let score = 100;
   const breakdown = { liquidity: 80, whaleConcentration: 70, contractRisk: 75, volatility: 75 };
 
-  // Liquidity
   if (m.liquidityUsd === undefined) {
-    score -= 10;
-    breakdown.liquidity = 50;
-  } else if (m.liquidityUsd < 25_000) {
-    score -= 30;
-    breakdown.liquidity = 15;
-  } else if (m.liquidityUsd < 100_000) {
-    score -= 18;
-    breakdown.liquidity = 40;
-  } else if (m.liquidityUsd < 500_000) {
-    score -= 8;
-    breakdown.liquidity = 65;
-  } else {
-    breakdown.liquidity = 90;
-  }
+    score -= cls === "UNKNOWN" ? 25 : 10;
+    breakdown.liquidity = cls === "UNKNOWN" ? 30 : 50;
+  } else if (m.liquidityUsd < 25_000) { score -= 30; breakdown.liquidity = 15; }
+  else if (m.liquidityUsd < 100_000) { score -= 18; breakdown.liquidity = 40; }
+  else if (m.liquidityUsd < 500_000) { score -= 8; breakdown.liquidity = 65; }
+  else { breakdown.liquidity = 90; }
 
-  // Volume
-  if (!m.volume24h || m.volume24h < 1_000) {
-    score -= 20;
-    breakdown.contractRisk -= 10;
-  } else if (m.volume24h < 50_000) {
-    score -= 8;
-  }
+  if (!m.volume24h || m.volume24h < 1_000) { score -= 20; breakdown.contractRisk -= 10; }
+  else if (m.volume24h < 50_000) { score -= 8; }
 
-  // Age
-  if (m.ageDays !== undefined && m.ageDays < 7) {
-    score -= 15;
-    breakdown.contractRisk = 35;
-  } else if (m.ageDays !== undefined && m.ageDays < 30) {
-    score -= 5;
-    breakdown.contractRisk = 60;
-  } else if (m.ageDays !== undefined && m.ageDays > 365) {
-    breakdown.contractRisk = 88;
-  }
+  if (m.ageDays !== undefined && m.ageDays < 7) { score -= 15; breakdown.contractRisk = 35; }
+  else if (m.ageDays !== undefined && m.ageDays < 30) { score -= 5; breakdown.contractRisk = 60; }
+  else if (m.ageDays !== undefined && m.ageDays > 365) { breakdown.contractRisk = 88; }
 
-  // Volatility / suspicious spikes
   const change = Math.abs(m.priceChange24h ?? 0);
-  if (change > 100) {
-    score -= 15;
-    breakdown.volatility = 15;
-  } else if (change > 40) {
-    score -= 10;
-    breakdown.volatility = 35;
-  } else if (change > 15) {
-    breakdown.volatility = 60;
-  } else {
-    breakdown.volatility = 85;
-  }
+  if (change > 100) { score -= 15; breakdown.volatility = 15; }
+  else if (change > 40) { score -= 10; breakdown.volatility = 35; }
+  else if (change > 15) { breakdown.volatility = 60; }
+  else { breakdown.volatility = 85; }
 
-  // Whale concentration proxy (low liquidity + low volume)
   if ((m.liquidityUsd ?? 0) < 100_000 && (m.volume24h ?? 0) < 20_000) {
-    score -= 15;
-    breakdown.whaleConcentration = 25;
-  } else if ((m.liquidityUsd ?? 0) < 500_000) {
-    breakdown.whaleConcentration = 55;
-  } else {
-    breakdown.whaleConcentration = 80;
-  }
+    score -= 15; breakdown.whaleConcentration = 25;
+  } else if ((m.liquidityUsd ?? 0) < 500_000) { breakdown.whaleConcentration = 55; }
+  else { breakdown.whaleConcentration = 80; }
 
-  for (const k of Object.keys(breakdown) as (keyof typeof breakdown)[]) {
-    breakdown[k] = clamp(breakdown[k]);
-  }
+  if (cls === "UNKNOWN") score -= 10;
 
+  for (const k of Object.keys(breakdown) as (keyof typeof breakdown)[]) breakdown[k] = clamp(breakdown[k]);
   return { score: clamp(score), breakdown };
 }
 
@@ -272,18 +309,53 @@ function verdictFromScore(score: number): Verdict {
   return "AVOID";
 }
 
-// ---------- Opportunity Engine ----------
-function computeOpportunity(m: MarketSnapshot, riskScore: number): { tag: OpportunityTag; reason: string } {
+// ---------- Confidence ----------
+function computeConfidence(m: MarketSnapshot, cls: AssetClass): Confidence {
+  if (cls === "MAJOR") return "High";
+  if (cls === "UNKNOWN") return "Low";
+  const fields = [m.marketCap, m.volume24h, m.priceUsd, m.ageDays].filter((v) => v !== undefined).length;
+  if (cls === "MID" && fields >= 3) return "High";
+  if (fields >= 3) return "Medium";
+  if (fields >= 2) return "Medium";
+  return "Low";
+}
+
+// ---------- Outlook (lightweight forward signal) ----------
+function computeOutlook(m: MarketSnapshot, cls: AssetClass, riskScore: number): Outlook {
+  if (cls === "UNKNOWN") return "Weak";
+  const change = m.priceChange24h ?? 0;
+  const vol = m.volume24h ?? 0;
+
+  if (cls === "MAJOR") {
+    if (change > 3 && riskScore >= 70) return "Bullish";
+    if (change < -5) return "Weak";
+    return "Neutral";
+  }
+  if (riskScore < 40) return "Weak";
+  if (change > 8 && vol > 100_000 && riskScore >= 60) return "Bullish";
+  if (change < -15) return "Weak";
+  return "Neutral";
+}
+
+// ---------- Opportunity Engine (context-aware) ----------
+function computeOpportunity(m: MarketSnapshot, cls: AssetClass, riskScore: number): { tag: OpportunityTag; reason: string } {
+  if (cls === "MAJOR") {
+    const change = m.priceChange24h ?? 0;
+    if (change > 3) return { tag: "Trending", reason: "Widely adopted asset with steady upward momentum." };
+    if (change < -5) return { tag: "Trending", reason: "Major asset under short-term pressure — still highly liquid." };
+    return { tag: "Trending", reason: "Established asset with consistent global trading activity." };
+  }
+
   const vol = m.volume24h ?? 0;
   const liq = m.liquidityUsd ?? 0;
   const age = m.ageDays ?? 999;
   const change = m.priceChange24h ?? 0;
 
-  if (vol < 5_000 && liq < 50_000) {
-    return { tag: "Dead Zone", reason: "Almost no trading activity or liquidity right now." };
+  if (cls === "UNKNOWN" || (vol < 5_000 && liq < 50_000)) {
+    return { tag: "Low Activity Zone", reason: "Limited trading activity or liquidity at the moment." };
   }
   if (Math.abs(change) > 50 && riskScore < 50) {
-    return { tag: "Overhyped", reason: "Big price swings on shaky fundamentals — classic pump signs." };
+    return { tag: "Overhyped", reason: "Big price swings on shaky fundamentals — classic pump pattern." };
   }
   if (age < 30 && vol > 50_000 && liq > 100_000) {
     return { tag: "Early Gem", reason: "Young token with real volume and liquidity — worth watching carefully." };
@@ -294,7 +366,7 @@ function computeOpportunity(m: MarketSnapshot, riskScore: number): { tag: Opport
   if (vol > 50_000) {
     return { tag: "Trending", reason: "Active trading with reasonable fundamentals." };
   }
-  return { tag: "Dead Zone", reason: "Low activity — not much happening here." };
+  return { tag: "Low Activity Zone", reason: "Limited activity — not much happening here." };
 }
 
 // ---------- AI Explanation ----------
@@ -545,14 +617,40 @@ Deno.serve(async (req) => {
       );
     }
 
-    const market = await gatherMarketData(input);
-    const { score: riskScore, breakdown } = computeRisk(market);
+    let market = await gatherMarketData(input);
+
+    // Step 1: provisional classification using whatever we already have.
+    let classification = classifyAsset(market);
+
+    // Step 2: data hierarchy. If DEX gave us a token that *could* be a major
+    // asset (had a recognizable symbol) but we lack global market cap/volume,
+    // enrich from CoinGecko so global liquidity isn't misread as "no liquidity".
+    const symbolLooksReal = market.symbol && market.symbol !== "?";
+    const looksPotentiallyMajor = symbolLooksReal && (
+      (market.marketCap ?? 0) < 1_000_000_000 || market.marketCap === undefined
+    );
+    if ((classification === "LOW" || classification === "UNKNOWN" || classification === "MID") && looksPotentiallyMajor) {
+      const enriched = await enrichWithCoinGecko(market);
+      const newCls = classifyAsset(enriched);
+      // Only adopt enrichment if it upgrades the classification or fills core data.
+      if (newCls === "MAJOR" || newCls === "MID" || (enriched.marketCap && !market.marketCap)) {
+        market = enriched;
+        classification = newCls;
+      }
+    }
+
+    const { score: riskScore, breakdown } = computeRisk(market, classification);
     const verdict = verdictFromScore(riskScore);
-    const opportunity = computeOpportunity(market, riskScore);
+    const opportunity = computeOpportunity(market, classification, riskScore);
+    const confidence = computeConfidence(market, classification);
+    const outlook = computeOutlook(market, classification, riskScore);
     const ai = await generateExplanation(market, riskScore, verdict, opportunity);
 
     const result = {
       token: market,
+      classification,
+      confidence,
+      outlook,
       riskScore,
       riskBreakdown: breakdown,
       opportunity,

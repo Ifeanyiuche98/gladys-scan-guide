@@ -16,7 +16,7 @@ export const UpgradeModal = ({ open, onOpenChange }: Props) => (
         </div>
         <DialogTitle className="text-center text-2xl font-display">Daily limit reached</DialogTitle>
         <DialogDescription className="text-center pt-2">
-          You've used your 3 free scans for today. Come back tomorrow, or upgrade for unlimited scans.
+          You've used your 6 free scans for today. Come back tomorrow, or upgrade for unlimited scans.
         </DialogDescription>
       </DialogHeader>
       <div className="flex flex-col gap-2 mt-2">

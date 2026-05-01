@@ -5,7 +5,7 @@ import { OpportunitySignal } from "./OpportunitySignal";
 import { RedFlags } from "./RedFlags";
 import { BeginnerMode } from "./BeginnerMode";
 import { VerdictBanner } from "./Verdict";
-import { WhyVerdict } from "./WhyVerdict";
+import { DecisionBreakdown } from "./DecisionBreakdown";
 import { ShareResult } from "./ShareResult";
 import { Button } from "@/components/ui/button";
 import { RotateCw } from "lucide-react";
@@ -17,16 +17,31 @@ interface Props {
 
 export const Results = ({ result, onScanAnother }: Props) => (
   <div className="space-y-5">
+    {/* 1. Asset name + basic info */}
+    <TokenSummary result={result} />
+
+    {/* 2. Risk Score */}
+    <RiskScore score={result.riskScore} breakdown={result.riskBreakdown} />
+
+    {/* 3. Final Verdict (with Confidence + Outlook) */}
     <div className="relative">
-      <VerdictBanner verdict={result.verdict} reason={result.verdictReason} />
+      <VerdictBanner
+        verdict={result.verdict}
+        reason={result.verdictReason}
+        confidence={result.confidence}
+        outlook={result.outlook}
+      />
       <div className="absolute top-4 right-4">
         <ShareResult result={result} variant="icon" />
       </div>
     </div>
-    <WhyVerdict result={result} />
-    <TokenSummary result={result} />
-    <RiskScore score={result.riskScore} breakdown={result.riskBreakdown} />
+
+    {/* 4. Decision Breakdown */}
+    <DecisionBreakdown result={result} />
+
+    {/* 5. Red Flags (conditional content for MAJOR vs others handled inside) */}
     <RedFlags result={result} />
+
     <OpportunitySignal tag={result.opportunity.tag} reason={result.opportunity.reason} />
     <BeginnerMode explainer={result.explainer} />
 

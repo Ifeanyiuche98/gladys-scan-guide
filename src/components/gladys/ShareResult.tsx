@@ -11,30 +11,32 @@ const verdictEmoji: Record<Verdict, string> = {
 };
 
 function buildKeyInsights(result: ScanResult): string[] {
-  const { token, riskBreakdown, verdict } = result;
+  const { token, riskBreakdown, classification, verdict } = result;
   const insights: { weight: number; text: string }[] = [];
 
-  const isMajorAsset =
-    (token.marketCap ?? 0) >= 1_000_000_000 && (token.volume24h ?? 0) >= 10_000_000;
+  if (classification === "MAJOR") {
+    insights.push({ weight: 100, text: "Widely adopted asset" });
+    insights.push({ weight: 90, text: "Deep global liquidity" });
+    insights.push({ weight: 80, text: "High trading activity" });
+    return insights.slice(0, 3).map((i) => i.text);
+  }
 
   if (token.liquidityUsd !== undefined) {
     if (token.liquidityUsd < 25_000) insights.push({ weight: 95, text: "Extremely low liquidity" });
     else if (token.liquidityUsd < 100_000) insights.push({ weight: 75, text: "Low liquidity" });
     else if (token.liquidityUsd < 500_000) insights.push({ weight: 40, text: "Thin liquidity" });
     else if (verdict === "SAFE-ISH") insights.push({ weight: 30, text: "Healthy liquidity" });
-  } else if (isMajorAsset) {
-    insights.push({ weight: 35, text: "Deep global exchange liquidity" });
   }
 
-  if (!token.volume24h || token.volume24h < 1_000) insights.push({ weight: 90, text: "No active trading" });
-  else if (token.volume24h < 50_000) insights.push({ weight: 65, text: "Weak trading activity" });
-  else if (verdict === "SAFE-ISH" && token.volume24h > 250_000)
-    insights.push({ weight: 30, text: "Steady trading activity" });
+  if (token.volume24h !== undefined) {
+    if (token.volume24h < 1_000) insights.push({ weight: 90, text: "Limited trading activity" });
+    else if (token.volume24h < 50_000) insights.push({ weight: 65, text: "Weak trading activity" });
+    else if (verdict === "SAFE-ISH" && token.volume24h > 250_000)
+      insights.push({ weight: 30, text: "Steady trading activity" });
+  }
 
-  if (riskBreakdown.whaleConcentration < 35)
-    insights.push({ weight: 80, text: "High whale concentration" });
-  else if (riskBreakdown.whaleConcentration < 60)
-    insights.push({ weight: 50, text: "Somewhat concentrated holdings" });
+  if (riskBreakdown.whaleConcentration < 35) insights.push({ weight: 80, text: "High whale concentration" });
+  else if (riskBreakdown.whaleConcentration < 60) insights.push({ weight: 50, text: "Somewhat concentrated holdings" });
 
   if (token.ageDays !== undefined) {
     if (token.ageDays < 7) insights.push({ weight: 70, text: "Brand new token" });
@@ -61,7 +63,7 @@ function buildKeyInsights(result: ScanResult): string[] {
 }
 
 function buildShareText(result: ScanResult): string {
-  const { token, verdict, riskScore } = result;
+  const { token, verdict, riskScore, confidence, outlook } = result;
   const name = token.symbol ? `${token.name} ($${token.symbol})` : token.name;
   const insights = buildKeyInsights(result);
   const appLink = typeof window !== "undefined" ? window.location.origin : "https://gladys-scan-guide.lovable.app";
@@ -71,6 +73,7 @@ function buildShareText(result: ScanResult): string {
     ``,
     `Verdict: ${verdictEmoji[verdict]} ${verdict}`,
     `Risk Score: ${riskScore}/100`,
+    `Confidence: ${confidence} • Outlook: ${outlook}`,
     ``,
     `Key insights:`,
     ...insights.map((i) => `- ${i}`),
