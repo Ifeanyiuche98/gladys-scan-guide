@@ -9,7 +9,10 @@ const corsHeaders = {
 };
 
 type Verdict = "SAFE-ISH" | "CAUTION" | "AVOID";
-type OpportunityTag = "Early Gem" | "Trending" | "Overhyped" | "Dead Zone";
+type OpportunityTag = "Early Gem" | "Trending" | "Overhyped" | "Low Activity Zone";
+type AssetClass = "MAJOR" | "MID" | "LOW" | "UNKNOWN";
+type Confidence = "High" | "Medium" | "Low";
+type Outlook = "Bullish" | "Neutral" | "Weak";
 
 interface MarketSnapshot {
   name: string;
