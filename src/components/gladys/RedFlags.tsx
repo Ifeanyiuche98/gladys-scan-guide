@@ -8,10 +8,9 @@ interface Props {
 type Flag = {
   level: "danger" | "caution" | "safe";
   message: string;
-  weight: number; // higher = more severe / show first
+  weight: number;
 };
 
-// ---- formatters ----
 const fmtUsd = (n: number) => {
   if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
@@ -24,239 +23,104 @@ const fmtAge = (days: number) => {
   if (days === 1) return "1 day";
   if (days < 30) return `${days} days`;
   if (days < 365) return `${Math.floor(days / 30)} month${Math.floor(days / 30) === 1 ? "" : "s"}`;
-  const years = (days / 365).toFixed(1);
-  return `${years} years`;
+  return `${(days / 365).toFixed(1)} years`;
 };
 
 function buildFlags(result: ScanResult): Flag[] {
   const flags: Flag[] = [];
-  const { token, riskBreakdown } = result;
+  const { token, riskBreakdown, classification } = result;
   const sym = token.symbol && token.symbol !== "?" ? token.symbol : token.name;
 
-  // Major / established asset heuristic: large cap + heavy daily volume.
-  // These trade across hundreds of CEX/DEX venues, so a single DEX-pool
-  // liquidity number is meaningless and should NOT trigger a warning.
-  // (e.g. SOL, ETH, BTC, BNB, XRP — CoinGecko returns no pool liquidity.)
-  const isMajorAsset =
-    (token.marketCap ?? 0) >= 1_000_000_000 &&
-    (token.volume24h ?? 0) >= 10_000_000;
-  const isLargeAsset =
-    (token.marketCap ?? 0) >= 100_000_000 &&
-    (token.volume24h ?? 0) >= 1_000_000;
-
-  // --- Liquidity (use real numbers when we have them) ---
-  if (token.liquidityUsd === undefined) {
-    if (isMajorAsset) {
-      flags.push({
-        level: "safe",
-        weight: 15,
-        message: `${sym} trades across major exchanges with deep global liquidity — easy to buy and sell.`,
-      });
-    } else if (isLargeAsset) {
-      flags.push({
-        level: "safe",
-        weight: 12,
-        message: `${sym} is widely traded on multiple exchanges — liquidity is not a concern.`,
-      });
-    } else {
-      flags.push({
-        level: "caution",
-        weight: 55,
-        message: `No on-chain pool liquidity data found for ${sym} — verify it's listed on a reputable exchange before buying.`,
-      });
+  // Liquidity (skip noisy DEX-pool flag for MAJOR; only realistic warnings allowed)
+  if (token.liquidityUsd !== undefined && classification !== "MAJOR") {
+    if (token.liquidityUsd < 10_000) {
+      flags.push({ level: "danger", weight: 95, message: `Critically low liquidity (${fmtUsd(token.liquidityUsd)}) — exiting could be nearly impossible.` });
+    } else if (token.liquidityUsd < 50_000) {
+      flags.push({ level: "danger", weight: 85, message: `Very low liquidity (${fmtUsd(token.liquidityUsd)}) — even small sells will move the price.` });
+    } else if (token.liquidityUsd < 250_000) {
+      flags.push({ level: "caution", weight: 60, message: `Thin liquidity pool (${fmtUsd(token.liquidityUsd)}) — large trades will slip noticeably.` });
     }
-  } else if (token.liquidityUsd < 10_000) {
-    flags.push({
-      level: "danger",
-      weight: 95,
-      message: `Critically low liquidity (${fmtUsd(token.liquidityUsd)}) — exiting could be nearly impossible.`,
-    });
-  } else if (token.liquidityUsd < 50_000) {
-    flags.push({
-      level: "danger",
-      weight: 85,
-      message: `Very low liquidity (${fmtUsd(token.liquidityUsd)}) — even small sells will move the price hard.`,
-    });
-  } else if (token.liquidityUsd < 250_000) {
-    flags.push({
-      level: "caution",
-      weight: 60,
-      message: `Thin liquidity pool (${fmtUsd(token.liquidityUsd)}) — large trades will slip noticeably.`,
-    });
-  } else if (token.liquidityUsd >= 1_000_000) {
-    flags.push({
-      level: "safe",
-      weight: 10,
-      message: `Healthy liquidity (${fmtUsd(token.liquidityUsd)}) — easy to enter and exit.`,
-    });
   }
 
-  // --- 24h Volume ---
-  if (token.volume24h === undefined) {
-    flags.push({
-      level: "caution",
-      weight: 50,
-      message: `No 24h trading volume reported for ${sym}.`,
-    });
-  } else if (token.volume24h < 500) {
-    flags.push({
-      level: "danger",
-      weight: 90,
-      message: `Almost no trading in the last 24h (${fmtUsd(token.volume24h)}) — looks abandoned.`,
-    });
-  } else if (token.volume24h < 25_000) {
-    flags.push({
-      level: "caution",
-      weight: 65,
-      message: `Weak 24h volume (${fmtUsd(token.volume24h)}) — few real buyers if you want out.`,
-    });
-  } else if (token.volume24h > 1_000_000) {
-    flags.push({
-      level: "safe",
-      weight: 8,
-      message: `Strong daily volume (${fmtUsd(token.volume24h)}) — active two-sided market.`,
-    });
+  // Volume — skip for MAJOR (global volume is always strong)
+  if (classification !== "MAJOR") {
+    if (token.volume24h === undefined) {
+      flags.push({ level: "caution", weight: 50, message: `No 24h trading volume reported for ${sym}.` });
+    } else if (token.volume24h < 500) {
+      flags.push({ level: "danger", weight: 90, message: `Limited trading in the last 24h (${fmtUsd(token.volume24h)}).` });
+    } else if (token.volume24h < 25_000) {
+      flags.push({ level: "caution", weight: 65, message: `Weak 24h volume (${fmtUsd(token.volume24h)}) — fewer real buyers if you want out.` });
+    }
   }
 
-  // --- Volume vs liquidity sanity (wash-trade smell) ---
-  // Skip for major assets: their volume is global (CEX+DEX) while liquidity
-  // is one pool, so the ratio is naturally huge and meaningless.
+  // Wash trading sanity — explicitly skipped for MAJOR per data hierarchy.
   if (
-    !isLargeAsset &&
+    classification !== "MAJOR" &&
     token.volume24h !== undefined &&
     token.liquidityUsd !== undefined &&
     token.liquidityUsd > 5_000 &&
     token.volume24h / token.liquidityUsd > 20
   ) {
-    flags.push({
-      level: "danger",
-      weight: 80,
-      message: `Volume is ${(token.volume24h / token.liquidityUsd).toFixed(0)}× the liquidity — possible wash trading.`,
-    });
+    flags.push({ level: "danger", weight: 80, message: `Volume is ${(token.volume24h / token.liquidityUsd).toFixed(0)}× the liquidity — possible wash trading.` });
   }
 
-  // --- Token / pair age ---
-  if (token.ageDays !== undefined) {
+  // Token age
+  if (token.ageDays !== undefined && classification !== "MAJOR") {
     if (token.ageDays < 1) {
-      flags.push({
-        level: "danger",
-        weight: 88,
-        message: `Brand new — created ${fmtAge(token.ageDays)} ago. Extremely high rug risk.`,
-      });
+      flags.push({ level: "danger", weight: 88, message: `Brand new — created ${fmtAge(token.ageDays)} ago. Very high rug risk.` });
     } else if (token.ageDays < 7) {
-      flags.push({
-        level: "danger",
-        weight: 75,
-        message: `Only ${fmtAge(token.ageDays)} old — no track record yet.`,
-      });
+      flags.push({ level: "danger", weight: 75, message: `Only ${fmtAge(token.ageDays)} old — no track record yet.` });
     } else if (token.ageDays < 30) {
-      flags.push({
-        level: "caution",
-        weight: 55,
-        message: `Young token — ${fmtAge(token.ageDays)} of history.`,
-      });
-    } else if (token.ageDays > 365) {
-      flags.push({
-        level: "safe",
-        weight: 12,
-        message: `Established for ${fmtAge(token.ageDays)} — survived multiple market cycles.`,
-      });
+      flags.push({ level: "caution", weight: 55, message: `Young token — ${fmtAge(token.ageDays)} of history.` });
     }
   }
 
-  // --- Price action (directional, not just absolute) ---
+  // Price action
   const change = token.priceChange24h;
   if (change !== undefined) {
-    if (change > 100) {
-      flags.push({
-        level: "danger",
-        weight: 78,
-        message: `Up ${change.toFixed(0)}% in 24h — classic pump pattern, dump risk is high.`,
-      });
-    } else if (change < -50) {
-      flags.push({
-        level: "danger",
-        weight: 82,
-        message: `Down ${Math.abs(change).toFixed(0)}% in 24h — actively crashing right now.`,
-      });
-    } else if (change > 40) {
-      flags.push({
-        level: "caution",
-        weight: 50,
-        message: `Up ${change.toFixed(0)}% today — expect a pullback, don't chase.`,
-      });
-    } else if (change < -20) {
-      flags.push({
-        level: "caution",
-        weight: 55,
-        message: `Down ${Math.abs(change).toFixed(0)}% today — momentum is against it.`,
-      });
+    const tolerance = classification === "MAJOR" ? 25 : 0;
+    if (change > 100 && classification !== "MAJOR") {
+      flags.push({ level: "danger", weight: 78, message: `Up ${change.toFixed(0)}% in 24h — classic pump pattern, dump risk is high.` });
+    } else if (change < -50 && classification !== "MAJOR") {
+      flags.push({ level: "danger", weight: 82, message: `Down ${Math.abs(change).toFixed(0)}% in 24h — actively crashing right now.` });
+    } else if (change > 40 + tolerance) {
+      flags.push({ level: "caution", weight: 50, message: `Up ${change.toFixed(0)}% today — expect a pullback, don't chase.` });
+    } else if (change < -(20 + tolerance)) {
+      flags.push({ level: "caution", weight: 55, message: `Down ${Math.abs(change).toFixed(0)}% today — momentum is against it.` });
     }
   }
 
-  // --- Market cap signals ---
-  if (token.marketCap !== undefined) {
+  // Market cap — only meaningful for non-major
+  if (token.marketCap !== undefined && classification !== "MAJOR") {
     if (token.marketCap < 100_000) {
-      flags.push({
-        level: "danger",
-        weight: 70,
-        message: `Micro market cap (${fmtUsd(token.marketCap)}) — easily manipulated by a single buyer.`,
-      });
+      flags.push({ level: "danger", weight: 70, message: `Micro market cap (${fmtUsd(token.marketCap)}) — easily moved by a single buyer.` });
     } else if (token.marketCap < 1_000_000) {
-      flags.push({
-        level: "caution",
-        weight: 45,
-        message: `Small market cap (${fmtUsd(token.marketCap)}) — expect high volatility.`,
-      });
+      flags.push({ level: "caution", weight: 45, message: `Small market cap (${fmtUsd(token.marketCap)}) — expect high volatility.` });
     }
   }
 
-  // --- Whale concentration (from breakdown) ---
-  if (riskBreakdown.whaleConcentration < 30) {
-    flags.push({
-      level: "danger",
-      weight: 72,
-      message: `Supply looks heavily concentrated — a few wallets can crash the price at will.`,
-    });
-  } else if (riskBreakdown.whaleConcentration < 55) {
-    flags.push({
-      level: "caution",
-      weight: 48,
-      message: `Holdings appear somewhat concentrated — watch for sudden whale moves.`,
-    });
+  // Whale concentration — skip for MAJOR
+  if (classification !== "MAJOR") {
+    if (riskBreakdown.whaleConcentration < 30) {
+      flags.push({ level: "danger", weight: 72, message: `Supply looks heavily concentrated — a few wallets can move the price at will.` });
+    } else if (riskBreakdown.whaleConcentration < 55) {
+      flags.push({ level: "caution", weight: 48, message: `Holdings appear somewhat concentrated — watch for sudden whale moves.` });
+    }
   }
 
-  // --- Chain / data availability ---
+  // Chain / data availability
   if (token.chain === "Unknown") {
-    flags.push({
-      level: "caution",
-      weight: 60,
-      message: `We couldn't identify which blockchain ${sym} runs on — verify before sending funds.`,
-    });
+    flags.push({ level: "caution", weight: 60, message: `We couldn't identify which blockchain ${sym} runs on — verify before sending funds.` });
   }
 
   const missingCore =
     token.liquidityUsd === undefined &&
     token.volume24h === undefined &&
     token.marketCap === undefined;
-  if (missingCore) {
-    flags.push({
-      level: "danger",
-      weight: 92,
-      message: `No reliable market data found for ${sym} — could be unlisted, scam, or mistyped.`,
-    });
+  if (missingCore && classification !== "MAJOR") {
+    flags.push({ level: "danger", weight: 92, message: `No reliable market data found for ${sym} — could be unlisted or mistyped.` });
   }
 
-  // --- All clear fallback ---
-  if (flags.filter((f) => f.level !== "safe").length === 0) {
-    flags.push({
-      level: "safe",
-      weight: 1,
-      message: `No major red flags detected for ${sym} — but always do your own research.`,
-    });
-  }
-
-  // Sort by severity (danger > caution > safe), then by weight, cap to 5
   const levelRank = { danger: 3, caution: 2, safe: 1 };
   return flags
     .sort((a, b) => levelRank[b.level] - levelRank[a.level] || b.weight - a.weight)
@@ -274,14 +138,49 @@ const styleFor = (level: Flag["level"]) => {
 
 export const RedFlags = ({ result }: Props) => {
   const flags = buildFlags(result);
-  const allClear = flags.length === 1 && flags[0].level === "safe";
+
+  // For MAJOR assets with no real flags, show clean confirmation instead of
+  // an empty/alarmist "Red Flags" header.
+  if (result.classification === "MAJOR" && flags.length === 0) {
+    return (
+      <Card className="border-border/60 bg-card/60 backdrop-blur">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base sm:text-lg flex items-center gap-2">
+            <span aria-hidden>✅</span>
+            <span>No Critical Risk Signals Detected</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-foreground/80 leading-relaxed">
+            This is a widely adopted asset traded across major exchanges. Standard market risks still apply — always do your own research.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (flags.length === 0) {
+    return (
+      <Card className="border-border/60 bg-card/60 backdrop-blur">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base sm:text-lg flex items-center gap-2">
+            <span aria-hidden>✅</span>
+            <span>No Major Red Flags</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-foreground/80">No major red flags detected — but always do your own research.</p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card className="border-border/60 bg-card/60 backdrop-blur">
       <CardHeader className="pb-3">
         <CardTitle className="text-base sm:text-lg flex items-center gap-2">
-          <span aria-hidden>{allClear ? "✅" : "🚨"}</span>
-          <span>{allClear ? "No Major Red Flags" : "Red Flags Detected"}</span>
+          <span aria-hidden>🚨</span>
+          <span>Red Flags Detected</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -290,9 +189,7 @@ export const RedFlags = ({ result }: Props) => {
             key={i}
             className={`flex items-start gap-3 rounded-lg border px-3 py-2.5 text-sm leading-snug ${styleFor(f.level)}`}
           >
-            <span className="text-base leading-none pt-0.5" aria-hidden>
-              {iconFor(f.level)}
-            </span>
+            <span className="text-base leading-none pt-0.5" aria-hidden>{iconFor(f.level)}</span>
             <p className="flex-1">{f.message}</p>
           </div>
         ))}
