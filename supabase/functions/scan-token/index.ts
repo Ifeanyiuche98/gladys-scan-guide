@@ -492,50 +492,67 @@ async function hashClient(identifier: string): Promise<string> {
 }
 
 /**
- * Derive a client identifier from trusted infrastructure headers only.
+ * Derive a stable client identifier for fair, per-device rate limiting.
  *
- * Supabase Edge Functions sit behind Cloudflare, which sets `cf-connecting-ip`
- * with the verified client IP and strips any client-supplied copy. We trust
- * that header first.
+ * Priority:
+ *   1. `x-gladys-client-id` — UUID generated client-side and persisted in
+ *      localStorage. This is the PRIMARY identifier so users on shared/NAT
+ *      networks (offices, schools, mobile carriers) get independent quotas.
+ *   2. IP fallback (cf-connecting-ip → right-most XFF entry) only when the
+ *      client ID header is missing.
  *
- * For `x-forwarded-for` we take the RIGHT-MOST entry. The platform edge
- * appends the real connecting IP as the last hop, while any client-supplied
- * values would appear earlier in the list and must be ignored. This prevents
- * trivial bypass via `X-Forwarded-For: 1.2.3.4` spoofing.
- *
- * Spoofable headers like `x-real-ip` are ignored entirely.
- *
- * We also mix in the user-agent so two devices behind the same NAT don't
- * share a counter and a single attacker can't evade the limit by rotating
- * just one signal.
+ * The application origin is mixed in so the same device can't be limited
+ * across unrelated deployments. User-agent is intentionally NOT used for
+ * enforcement (only logged separately if needed).
  */
-function getClientFingerprint(req: Request): string {
+function getClientFingerprint(req: Request): { fingerprint: string; source: "client_id" | "ip" } {
+  const origin = (req.headers.get("origin") ?? req.headers.get("referer") ?? "unknown").toLowerCase();
+  const clientId = req.headers.get("x-gladys-client-id")?.trim();
+  if (clientId && /^[a-f0-9-]{16,64}$/i.test(clientId)) {
+    return { fingerprint: `${clientId}|${origin}`, source: "client_id" };
+  }
   const cfIp = req.headers.get("cf-connecting-ip");
   const xff = req.headers.get("x-forwarded-for");
-  // Right-most XFF entry = last trusted hop appended by the platform edge.
   const xffIp = xff ? xff.split(",").map((s) => s.trim()).filter(Boolean).pop() ?? "" : "";
   const ip = (cfIp || xffIp || "unknown").toLowerCase();
-  const ua = (req.headers.get("user-agent") ?? "").slice(0, 120);
-  return `${ip}|${ua}`;
+  return { fingerprint: `${ip}|${origin}`, source: "ip" };
 }
 
-async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean; remaining: number; reason?: "daily" | "burst" }> {
+function nextResetTime(): string {
+  // UTC midnight (next day) — matches usage_date rollover.
+  const d = new Date();
+  d.setUTCHours(24, 0, 0, 0);
+  return d.toISOString();
+}
+
+async function checkAndIncrementQuota(
+  req: Request,
+): Promise<{ allowed: boolean; remaining: number; resetTime: string; reason?: "daily" | "burst" }> {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const resetTime = nextResetTime();
   if (!supabaseUrl || !serviceKey) {
     console.error("Missing Supabase env for rate limiting");
-    return { allowed: true, remaining: DAILY_LIMIT };
+    return { allowed: true, remaining: DAILY_LIMIT, resetTime };
   }
 
-  const fingerprint = getClientFingerprint(req);
+  const { fingerprint, source } = getClientFingerprint(req);
   const clientHash = await hashClient(fingerprint);
   const today = new Date().toISOString().slice(0, 10);
+
+  if (Deno.env.get("DENO_DEPLOYMENT_ID") === undefined) {
+    // Local/dev only — never log in production.
+    console.debug(`[rate-limit] source=${source} hash=${clientHash.slice(0, 8)}…`);
+  }
 
   // Burst guard: reject rapid repeat calls from the same fingerprint.
   const now = Date.now();
   const last = burstMap.get(clientHash) ?? 0;
   if (now - last < BURST_WINDOW_MS) {
-    return { allowed: false, remaining: -1, reason: "burst" };
+    if (Deno.env.get("DENO_DEPLOYMENT_ID") === undefined) {
+      console.debug(`[rate-limit] burst triggered for ${clientHash.slice(0, 8)}…`);
+    }
+    return { allowed: false, remaining: -1, resetTime, reason: "burst" };
   }
   burstMap.set(clientHash, now);
   if (burstMap.size > 5000) {
@@ -559,7 +576,10 @@ async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean;
   const current: number = rows?.[0]?.count ?? 0;
 
   if (current >= DAILY_LIMIT) {
-    return { allowed: false, remaining: 0, reason: "daily" };
+    if (Deno.env.get("DENO_DEPLOYMENT_ID") === undefined) {
+      console.debug(`[rate-limit] daily limit reached for ${clientHash.slice(0, 8)}…`);
+    }
+    return { allowed: false, remaining: 0, resetTime, reason: "daily" };
   }
 
   const upR = await fetch(`${supabaseUrl}/rest/v1/scan_usage?on_conflict=client_hash,usage_date`, {
@@ -573,11 +593,10 @@ async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean;
     }),
   });
   if (!upR.ok) {
-    // Avoid logging response body — may contain infra detail.
     console.error("scan_usage upsert failed with status:", upR.status);
   }
 
-  return { allowed: true, remaining: Math.max(0, DAILY_LIMIT - (current + 1)) };
+  return { allowed: true, remaining: Math.max(0, DAILY_LIMIT - (current + 1)), resetTime };
 }
 
 // ---------- Handler ----------
