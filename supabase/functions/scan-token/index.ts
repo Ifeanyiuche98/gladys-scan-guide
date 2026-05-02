@@ -834,12 +834,18 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
+    if (e instanceof ContractResolutionError) {
+      return new Response(
+        JSON.stringify({ error: e.userMessage, contractUnresolved: true }),
+        { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
     // Log full detail server-side. Return a real 500 so monitoring and
     // clients can distinguish failures from successes.
     console.error("scan-token error:", e);
     return new Response(
       JSON.stringify({
-        error: "We couldn't scan that token right now. Try again in a moment.",
+        error: "Something went wrong while analyzing this token. Please try again.",
         fallback: true,
       }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
