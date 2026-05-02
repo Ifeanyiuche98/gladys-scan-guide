@@ -5,7 +5,7 @@
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+    "authorization, x-client-info, apikey, content-type, x-gladys-client-id, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
 type Verdict = "SAFE-ISH" | "CAUTION" | "AVOID";
@@ -624,6 +624,7 @@ Deno.serve(async (req) => {
           rateLimited: true,
           burst: isBurst,
           remainingScans: isBurst ? undefined : 0,
+          limitResetTime: quota.resetTime,
         }),
         {
           status: 429,
@@ -682,6 +683,7 @@ Deno.serve(async (req) => {
         whatCouldGoWrong: ai.whatCouldGoWrong,
       },
       remainingScans: quota.remaining,
+      limitResetTime: quota.resetTime,
       scannedAt: new Date().toISOString(),
     };
 
