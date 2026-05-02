@@ -120,11 +120,36 @@ async function fetchCoinGeckoCoin(id: string) {
   }
 }
 
+// CoinGecko platform → display chain name. Each platform is queried
+// INDEPENDENTLY so we never merge same-symbol tokens across networks.
+const CG_PLATFORMS: Record<string, string> = {
+  ethereum: "Ethereum",
+  "binance-smart-chain": "BNB Smart Chain",
+  "polygon-pos": "Polygon",
+  "arbitrum-one": "Arbitrum",
+  base: "Base",
+  "optimistic-ethereum": "Optimism",
+  avalanche: "Avalanche",
+  fantom: "Fantom",
+};
+
+async function fetchCoinGeckoByContract(platform: string, address: string) {
+  try {
+    const r = await fetchWithTimeout(
+      `https://api.coingecko.com/api/v3/coins/${platform}/contract/${address.toLowerCase()}`,
+    );
+    if (!r || !r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
 function chainFromDex(p: any): string {
   const id = (p?.chainId ?? "").toString().toLowerCase();
   const map: Record<string, string> = {
     ethereum: "Ethereum",
-    bsc: "BSC",
+    bsc: "BNB Smart Chain",
     polygon: "Polygon",
     arbitrum: "Arbitrum",
     base: "Base",
@@ -135,33 +160,150 @@ function chainFromDex(p: any): string {
   return map[id] ?? (id ? id.charAt(0).toUpperCase() + id.slice(1) : "Unknown");
 }
 
+// Sentinel error type for unresolved contracts.
+class ContractResolutionError extends Error {
+  constructor(public userMessage: string) {
+    super(userMessage);
+  }
+}
+
+/**
+ * Strict chain-aware contract resolution.
+ *
+ * 1. Query Dexscreener — returns ALL pairs across chains for the address.
+ * 2. Group by chain. NEVER merge across chains.
+ * 3. If results on multiple distinct chains → ambiguous (rare for EVM since
+ *    addresses are usually unique to one deployment, but a token can be
+ *    bridged with the same address on EVM forks).
+ * 4. Cross-check with CoinGecko's contract endpoint per-chain to verify
+ *    name/symbol consistency.
+ */
+async function resolveContractStrict(address: string): Promise<MarketSnapshot> {
+  // 1. Dexscreener — multi-chain lookup by token address
+  const dexR = await fetchWithTimeout(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+  const dexData = dexR && dexR.ok ? await dexR.json() : null;
+  const allPairs = (dexData?.pairs ?? []) as any[];
+
+  // Group pairs by chain, picking the deepest-liquidity pair per chain.
+  const byChain = new Map<string, any>();
+  for (const p of allPairs) {
+    const chain = chainFromDex(p);
+    const existing = byChain.get(chain);
+    if (!existing || (p?.liquidity?.usd ?? 0) > (existing?.liquidity?.usd ?? 0)) {
+      byChain.set(chain, p);
+    }
+  }
+
+  const distinctChains = [...byChain.keys()];
+
+  if (distinctChains.length === 0) {
+    // 2. Fallback: try CoinGecko per platform individually (no merging).
+    const cgPlatforms = Object.keys(CG_PLATFORMS);
+    const cgHits: Array<{ chain: string; coin: any }> = [];
+    for (const platform of cgPlatforms) {
+      const coin = await fetchCoinGeckoByContract(platform, address);
+      if (coin?.id) cgHits.push({ chain: CG_PLATFORMS[platform], coin });
+    }
+    if (cgHits.length === 0) {
+      throw new ContractResolutionError("Contract not recognized on supported networks.");
+    }
+    if (cgHits.length > 1) {
+      const chains = new Set(cgHits.map((h) => h.chain));
+      if (chains.size > 1) {
+        throw new ContractResolutionError(
+          "Unable to confidently resolve this contract address. Please verify the network.",
+        );
+      }
+    }
+    const { chain, coin } = cgHits[0];
+    const md = coin.market_data ?? {};
+    const created = coin.genesis_date ? new Date(coin.genesis_date) : null;
+    return {
+      name: coin.name ?? "Unknown Token",
+      symbol: (coin.symbol ?? "?").toUpperCase(),
+      chain,
+      address,
+      priceUsd: md.current_price?.usd,
+      marketCap: md.market_cap?.usd,
+      volume24h: md.total_volume?.usd,
+      liquidityUsd: undefined,
+      ageDays: created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined,
+      priceChange24h: md.price_change_percentage_24h,
+    };
+  }
+
+  // 3. Multiple chains from Dexscreener → ambiguous unless one clearly dominates.
+  let chosenPair: any;
+  let chosenChain: string;
+  if (distinctChains.length === 1) {
+    chosenChain = distinctChains[0];
+    chosenPair = byChain.get(chosenChain);
+  } else {
+    // Pick the chain with the most liquidity, but only if it's clearly dominant
+    // (≥ 5x the next one). Otherwise refuse to guess.
+    const ranked = [...byChain.entries()].sort(
+      (a, b) => (b[1]?.liquidity?.usd ?? 0) - (a[1]?.liquidity?.usd ?? 0),
+    );
+    const top = ranked[0][1]?.liquidity?.usd ?? 0;
+    const next = ranked[1][1]?.liquidity?.usd ?? 0;
+    if (top > 0 && (next === 0 || top >= next * 5)) {
+      chosenChain = ranked[0][0];
+      chosenPair = ranked[0][1];
+    } else {
+      throw new ContractResolutionError(
+        "Unable to confidently resolve this contract address. Please verify the network.",
+      );
+    }
+  }
+
+  const created = chosenPair.pairCreatedAt ? new Date(chosenPair.pairCreatedAt) : null;
+  const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined;
+  return {
+    name: chosenPair.baseToken?.name ?? "Unknown Token",
+    symbol: chosenPair.baseToken?.symbol ?? "?",
+    chain: chosenChain,
+    address: chosenPair.baseToken?.address ?? address,
+    priceUsd: chosenPair.priceUsd ? parseFloat(chosenPair.priceUsd) : undefined,
+    marketCap: chosenPair.fdv ?? chosenPair.marketCap,
+    volume24h: chosenPair.volume?.h24,
+    liquidityUsd: chosenPair.liquidity?.usd,
+    ageDays,
+    priceChange24h: chosenPair.priceChange?.h24,
+  };
+}
+
 async function gatherMarketData(input: string): Promise<MarketSnapshot> {
   const parsed = parseInput(input);
 
-  // Try dexscreener first if we have an address-like value
-  if (parsed.kind === "address" || parsed.kind === "url") {
-    const dex = parsed.kind === "url"
-      ? (await fetchDexscreenerByPair(parsed.value)) ?? (await fetchDexscreenerByAddress(parsed.value))
-      : await fetchDexscreenerByAddress(parsed.value);
-    if (dex) {
-      const created = dex.pairCreatedAt ? new Date(dex.pairCreatedAt) : null;
+  // CONTRACT INPUT → strict chain-aware resolution. Never fall back to
+  // name/symbol search — that would resolve to the wrong token.
+  if (parsed.kind === "address") {
+    return await resolveContractStrict(parsed.value);
+  }
+
+  // URL with a pair address → use dexscreener pair lookup, then fall back
+  // to address resolution if needed.
+  if (parsed.kind === "url") {
+    const pair = await fetchDexscreenerByPair(parsed.value);
+    if (pair) {
+      const created = pair.pairCreatedAt ? new Date(pair.pairCreatedAt) : null;
       const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined;
       return {
-        name: dex.baseToken?.name ?? "Unknown Token",
-        symbol: dex.baseToken?.symbol ?? "?",
-        chain: chainFromDex(dex),
-        address: dex.baseToken?.address ?? (parsed.kind === "address" ? parsed.value : undefined),
-        priceUsd: dex.priceUsd ? parseFloat(dex.priceUsd) : undefined,
-        marketCap: dex.fdv ?? dex.marketCap,
-        volume24h: dex.volume?.h24,
-        liquidityUsd: dex.liquidity?.usd,
+        name: pair.baseToken?.name ?? "Unknown Token",
+        symbol: pair.baseToken?.symbol ?? "?",
+        chain: chainFromDex(pair),
+        address: pair.baseToken?.address,
+        priceUsd: pair.priceUsd ? parseFloat(pair.priceUsd) : undefined,
+        marketCap: pair.fdv ?? pair.marketCap,
+        volume24h: pair.volume?.h24,
+        liquidityUsd: pair.liquidity?.usd,
         ageDays,
-        priceChange24h: dex.priceChange?.h24,
+        priceChange24h: pair.priceChange?.h24,
       };
     }
   }
 
-  // Fallback: coingecko search by name/symbol
+  // Name/symbol input: CoinGecko search.
   const search = await fetchCoinGeckoSearch(parsed.value);
   if (search?.id) {
     const coin = await fetchCoinGeckoCoin(search.id);
@@ -170,11 +312,12 @@ async function gatherMarketData(input: string): Promise<MarketSnapshot> {
       const created = coin.genesis_date ? new Date(coin.genesis_date) : null;
       const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined;
       const platforms = coin.platforms ?? {};
-      const chain = Object.keys(platforms).filter((k) => platforms[k])[0] ?? "Multi-chain";
+      const chainKey = Object.keys(platforms).filter((k) => platforms[k])[0];
+      const chain = chainKey ? (CG_PLATFORMS[chainKey] ?? chainKey.charAt(0).toUpperCase() + chainKey.slice(1)) : "Multi-chain";
       return {
         name: coin.name ?? search.name,
         symbol: (coin.symbol ?? search.symbol ?? "").toUpperCase(),
-        chain: chain.charAt(0).toUpperCase() + chain.slice(1),
+        chain,
         priceUsd: md.current_price?.usd,
         marketCap: md.market_cap?.usd,
         volume24h: md.total_volume?.usd,
