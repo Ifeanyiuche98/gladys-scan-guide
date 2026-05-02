@@ -4,7 +4,16 @@ import { ScanInput } from "@/components/gladys/ScanInput";
 import { Loader } from "@/components/gladys/Loader";
 import { Results } from "@/components/gladys/Results";
 import { UpgradeModal } from "@/components/gladys/UpgradeModal";
-import { canScan, recordScan, getRemainingScans, syncRemaining, markLimitReached, SCAN_LIMIT } from "@/lib/scan-limit";
+import {
+  canScan,
+  recordScan,
+  getRemainingScans,
+  syncRemaining,
+  markLimitReached,
+  setLimitResetTime,
+  SCAN_LIMIT,
+} from "@/lib/scan-limit";
+import { getClientId } from "@/lib/client-id";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import type { ScanResult } from "@/lib/scan-types";
@@ -25,17 +34,30 @@ const Index = () => {
     setStatus("loading");
     setResult(null);
 
+    const clientId = getClientId();
+
     try {
       const { data, error } = await supabase.functions.invoke("scan-token", {
         body: { input },
+        headers: { "x-gladys-client-id": clientId },
       });
 
       // Non-2xx response: supabase-js wraps it in FunctionsHttpError. Parse
-      // the JSON body to surface our structured error (e.g. 429 rate limits).
+      // the JSON body to surface our structured error.
       if (error) {
-        let payload: { error?: string; rateLimited?: boolean; burst?: boolean } | null = null;
+        let payload:
+          | {
+              error?: string;
+              rateLimited?: boolean;
+              burst?: boolean;
+              contractUnresolved?: boolean;
+              limitResetTime?: string;
+            }
+          | null = null;
+        let httpStatus: number | undefined;
         const ctx = (error as { context?: { response?: Response } }).context;
         if (ctx?.response) {
+          httpStatus = ctx.response.status;
           try {
             payload = await ctx.response.clone().json();
           } catch {
@@ -51,7 +73,9 @@ const Index = () => {
               description: payload.error ?? "Too many scans in a row. Try again in a few seconds.",
             });
           } else {
+            // 429 daily limit → modal only, no error toast
             markLimitReached();
+            setLimitResetTime(payload.limitResetTime);
             setRemaining(0);
             setStatus("idle");
             setShowUpgrade(true);
@@ -59,12 +83,41 @@ const Index = () => {
           return;
         }
 
-        throw new Error(payload?.error ?? error.message ?? "Scan failed");
+        if (payload?.contractUnresolved) {
+          setStatus("idle");
+          toast({
+            title: "Contract not recognized",
+            description: payload.error ?? "We couldn't verify this contract on supported networks.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        // 500 / unknown server failure
+        if (httpStatus === 500 || httpStatus === undefined) {
+          setStatus("idle");
+          toast({
+            title: "Scan failed",
+            description: "Something went wrong while analyzing this token. Please try again.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        // Other non-2xx — surface clean message, never raw infra error.
+        setStatus("idle");
+        toast({
+          title: "Scan failed",
+          description: payload?.error ?? "Something went wrong while analyzing this token. Please try again.",
+          variant: "destructive",
+        });
+        return;
       }
 
       if (data?.error) throw new Error(data.error);
 
       const serverRemaining = (data as { remainingScans?: number })?.remainingScans;
+      const serverReset = (data as { limitResetTime?: string })?.limitResetTime;
       if (typeof serverRemaining === "number") {
         syncRemaining(serverRemaining);
         setRemaining(serverRemaining);
@@ -72,13 +125,20 @@ const Index = () => {
         recordScan();
         setRemaining(getRemainingScans());
       }
+      if (serverReset) setLimitResetTime(serverReset);
       setResult(data as ScanResult);
       setStatus("result");
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Something went wrong";
+      // Network failure (no response received) or unexpected throw.
+      // Never expose raw "Edge Function returned non-2xx status code" or stack traces.
+      const isNetwork =
+        typeof navigator !== "undefined" && navigator.onLine === false ||
+        (e instanceof TypeError && /fetch|network/i.test(e.message));
       toast({
-        title: "Scan failed",
-        description: msg,
+        title: isNetwork ? "Network issue" : "Scan failed",
+        description: isNetwork
+          ? "Network issue detected. Please check your connection and try again."
+          : "Something went wrong while analyzing this token. Please try again.",
         variant: "destructive",
       });
       setStatus("idle");
