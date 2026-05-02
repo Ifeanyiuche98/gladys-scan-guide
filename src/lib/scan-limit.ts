@@ -1,4 +1,5 @@
 const KEY = "gladys_scan_usage_v1";
+const RESET_KEY = "gladys_scan_reset_v1";
 const LIMIT = 6;
 
 interface Usage {
@@ -47,6 +48,20 @@ export function syncRemaining(remaining: number): void {
 
 export function markLimitReached(): void {
   write(LIMIT);
+}
+
+export function setLimitResetTime(iso?: string): void {
+  try {
+    if (iso) localStorage.setItem(RESET_KEY, iso);
+  } catch { /* ignore */ }
+}
+
+export function getLimitResetTime(): string | null {
+  try {
+    return localStorage.getItem(RESET_KEY);
+  } catch {
+    return null;
+  }
 }
 
 export const SCAN_LIMIT = LIMIT;

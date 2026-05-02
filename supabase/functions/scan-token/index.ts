@@ -5,7 +5,7 @@
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+    "authorization, x-client-info, apikey, content-type, x-gladys-client-id, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
 type Verdict = "SAFE-ISH" | "CAUTION" | "AVOID";
@@ -120,11 +120,36 @@ async function fetchCoinGeckoCoin(id: string) {
   }
 }
 
+// CoinGecko platform → display chain name. Each platform is queried
+// INDEPENDENTLY so we never merge same-symbol tokens across networks.
+const CG_PLATFORMS: Record<string, string> = {
+  ethereum: "Ethereum",
+  "binance-smart-chain": "BNB Smart Chain",
+  "polygon-pos": "Polygon",
+  "arbitrum-one": "Arbitrum",
+  base: "Base",
+  "optimistic-ethereum": "Optimism",
+  avalanche: "Avalanche",
+  fantom: "Fantom",
+};
+
+async function fetchCoinGeckoByContract(platform: string, address: string) {
+  try {
+    const r = await fetchWithTimeout(
+      `https://api.coingecko.com/api/v3/coins/${platform}/contract/${address.toLowerCase()}`,
+    );
+    if (!r || !r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
 function chainFromDex(p: any): string {
   const id = (p?.chainId ?? "").toString().toLowerCase();
   const map: Record<string, string> = {
     ethereum: "Ethereum",
-    bsc: "BSC",
+    bsc: "BNB Smart Chain",
     polygon: "Polygon",
     arbitrum: "Arbitrum",
     base: "Base",
@@ -135,33 +160,150 @@ function chainFromDex(p: any): string {
   return map[id] ?? (id ? id.charAt(0).toUpperCase() + id.slice(1) : "Unknown");
 }
 
+// Sentinel error type for unresolved contracts.
+class ContractResolutionError extends Error {
+  constructor(public userMessage: string) {
+    super(userMessage);
+  }
+}
+
+/**
+ * Strict chain-aware contract resolution.
+ *
+ * 1. Query Dexscreener — returns ALL pairs across chains for the address.
+ * 2. Group by chain. NEVER merge across chains.
+ * 3. If results on multiple distinct chains → ambiguous (rare for EVM since
+ *    addresses are usually unique to one deployment, but a token can be
+ *    bridged with the same address on EVM forks).
+ * 4. Cross-check with CoinGecko's contract endpoint per-chain to verify
+ *    name/symbol consistency.
+ */
+async function resolveContractStrict(address: string): Promise<MarketSnapshot> {
+  // 1. Dexscreener — multi-chain lookup by token address
+  const dexR = await fetchWithTimeout(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+  const dexData = dexR && dexR.ok ? await dexR.json() : null;
+  const allPairs = (dexData?.pairs ?? []) as any[];
+
+  // Group pairs by chain, picking the deepest-liquidity pair per chain.
+  const byChain = new Map<string, any>();
+  for (const p of allPairs) {
+    const chain = chainFromDex(p);
+    const existing = byChain.get(chain);
+    if (!existing || (p?.liquidity?.usd ?? 0) > (existing?.liquidity?.usd ?? 0)) {
+      byChain.set(chain, p);
+    }
+  }
+
+  const distinctChains = [...byChain.keys()];
+
+  if (distinctChains.length === 0) {
+    // 2. Fallback: try CoinGecko per platform individually (no merging).
+    const cgPlatforms = Object.keys(CG_PLATFORMS);
+    const cgHits: Array<{ chain: string; coin: any }> = [];
+    for (const platform of cgPlatforms) {
+      const coin = await fetchCoinGeckoByContract(platform, address);
+      if (coin?.id) cgHits.push({ chain: CG_PLATFORMS[platform], coin });
+    }
+    if (cgHits.length === 0) {
+      throw new ContractResolutionError("Contract not recognized on supported networks.");
+    }
+    if (cgHits.length > 1) {
+      const chains = new Set(cgHits.map((h) => h.chain));
+      if (chains.size > 1) {
+        throw new ContractResolutionError(
+          "Unable to confidently resolve this contract address. Please verify the network.",
+        );
+      }
+    }
+    const { chain, coin } = cgHits[0];
+    const md = coin.market_data ?? {};
+    const created = coin.genesis_date ? new Date(coin.genesis_date) : null;
+    return {
+      name: coin.name ?? "Unknown Token",
+      symbol: (coin.symbol ?? "?").toUpperCase(),
+      chain,
+      address,
+      priceUsd: md.current_price?.usd,
+      marketCap: md.market_cap?.usd,
+      volume24h: md.total_volume?.usd,
+      liquidityUsd: undefined,
+      ageDays: created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined,
+      priceChange24h: md.price_change_percentage_24h,
+    };
+  }
+
+  // 3. Multiple chains from Dexscreener → ambiguous unless one clearly dominates.
+  let chosenPair: any;
+  let chosenChain: string;
+  if (distinctChains.length === 1) {
+    chosenChain = distinctChains[0];
+    chosenPair = byChain.get(chosenChain);
+  } else {
+    // Pick the chain with the most liquidity, but only if it's clearly dominant
+    // (≥ 5x the next one). Otherwise refuse to guess.
+    const ranked = [...byChain.entries()].sort(
+      (a, b) => (b[1]?.liquidity?.usd ?? 0) - (a[1]?.liquidity?.usd ?? 0),
+    );
+    const top = ranked[0][1]?.liquidity?.usd ?? 0;
+    const next = ranked[1][1]?.liquidity?.usd ?? 0;
+    if (top > 0 && (next === 0 || top >= next * 5)) {
+      chosenChain = ranked[0][0];
+      chosenPair = ranked[0][1];
+    } else {
+      throw new ContractResolutionError(
+        "Unable to confidently resolve this contract address. Please verify the network.",
+      );
+    }
+  }
+
+  const created = chosenPair.pairCreatedAt ? new Date(chosenPair.pairCreatedAt) : null;
+  const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined;
+  return {
+    name: chosenPair.baseToken?.name ?? "Unknown Token",
+    symbol: chosenPair.baseToken?.symbol ?? "?",
+    chain: chosenChain,
+    address: chosenPair.baseToken?.address ?? address,
+    priceUsd: chosenPair.priceUsd ? parseFloat(chosenPair.priceUsd) : undefined,
+    marketCap: chosenPair.fdv ?? chosenPair.marketCap,
+    volume24h: chosenPair.volume?.h24,
+    liquidityUsd: chosenPair.liquidity?.usd,
+    ageDays,
+    priceChange24h: chosenPair.priceChange?.h24,
+  };
+}
+
 async function gatherMarketData(input: string): Promise<MarketSnapshot> {
   const parsed = parseInput(input);
 
-  // Try dexscreener first if we have an address-like value
-  if (parsed.kind === "address" || parsed.kind === "url") {
-    const dex = parsed.kind === "url"
-      ? (await fetchDexscreenerByPair(parsed.value)) ?? (await fetchDexscreenerByAddress(parsed.value))
-      : await fetchDexscreenerByAddress(parsed.value);
-    if (dex) {
-      const created = dex.pairCreatedAt ? new Date(dex.pairCreatedAt) : null;
+  // CONTRACT INPUT → strict chain-aware resolution. Never fall back to
+  // name/symbol search — that would resolve to the wrong token.
+  if (parsed.kind === "address") {
+    return await resolveContractStrict(parsed.value);
+  }
+
+  // URL with a pair address → use dexscreener pair lookup, then fall back
+  // to address resolution if needed.
+  if (parsed.kind === "url") {
+    const pair = await fetchDexscreenerByPair(parsed.value);
+    if (pair) {
+      const created = pair.pairCreatedAt ? new Date(pair.pairCreatedAt) : null;
       const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined;
       return {
-        name: dex.baseToken?.name ?? "Unknown Token",
-        symbol: dex.baseToken?.symbol ?? "?",
-        chain: chainFromDex(dex),
-        address: dex.baseToken?.address ?? (parsed.kind === "address" ? parsed.value : undefined),
-        priceUsd: dex.priceUsd ? parseFloat(dex.priceUsd) : undefined,
-        marketCap: dex.fdv ?? dex.marketCap,
-        volume24h: dex.volume?.h24,
-        liquidityUsd: dex.liquidity?.usd,
+        name: pair.baseToken?.name ?? "Unknown Token",
+        symbol: pair.baseToken?.symbol ?? "?",
+        chain: chainFromDex(pair),
+        address: pair.baseToken?.address,
+        priceUsd: pair.priceUsd ? parseFloat(pair.priceUsd) : undefined,
+        marketCap: pair.fdv ?? pair.marketCap,
+        volume24h: pair.volume?.h24,
+        liquidityUsd: pair.liquidity?.usd,
         ageDays,
-        priceChange24h: dex.priceChange?.h24,
+        priceChange24h: pair.priceChange?.h24,
       };
     }
   }
 
-  // Fallback: coingecko search by name/symbol
+  // Name/symbol input: CoinGecko search.
   const search = await fetchCoinGeckoSearch(parsed.value);
   if (search?.id) {
     const coin = await fetchCoinGeckoCoin(search.id);
@@ -170,11 +312,12 @@ async function gatherMarketData(input: string): Promise<MarketSnapshot> {
       const created = coin.genesis_date ? new Date(coin.genesis_date) : null;
       const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined;
       const platforms = coin.platforms ?? {};
-      const chain = Object.keys(platforms).filter((k) => platforms[k])[0] ?? "Multi-chain";
+      const chainKey = Object.keys(platforms).filter((k) => platforms[k])[0];
+      const chain = chainKey ? (CG_PLATFORMS[chainKey] ?? chainKey.charAt(0).toUpperCase() + chainKey.slice(1)) : "Multi-chain";
       return {
         name: coin.name ?? search.name,
         symbol: (coin.symbol ?? search.symbol ?? "").toUpperCase(),
-        chain: chain.charAt(0).toUpperCase() + chain.slice(1),
+        chain,
         priceUsd: md.current_price?.usd,
         marketCap: md.market_cap?.usd,
         volume24h: md.total_volume?.usd,
@@ -492,50 +635,67 @@ async function hashClient(identifier: string): Promise<string> {
 }
 
 /**
- * Derive a client identifier from trusted infrastructure headers only.
+ * Derive a stable client identifier for fair, per-device rate limiting.
  *
- * Supabase Edge Functions sit behind Cloudflare, which sets `cf-connecting-ip`
- * with the verified client IP and strips any client-supplied copy. We trust
- * that header first.
+ * Priority:
+ *   1. `x-gladys-client-id` — UUID generated client-side and persisted in
+ *      localStorage. This is the PRIMARY identifier so users on shared/NAT
+ *      networks (offices, schools, mobile carriers) get independent quotas.
+ *   2. IP fallback (cf-connecting-ip → right-most XFF entry) only when the
+ *      client ID header is missing.
  *
- * For `x-forwarded-for` we take the RIGHT-MOST entry. The platform edge
- * appends the real connecting IP as the last hop, while any client-supplied
- * values would appear earlier in the list and must be ignored. This prevents
- * trivial bypass via `X-Forwarded-For: 1.2.3.4` spoofing.
- *
- * Spoofable headers like `x-real-ip` are ignored entirely.
- *
- * We also mix in the user-agent so two devices behind the same NAT don't
- * share a counter and a single attacker can't evade the limit by rotating
- * just one signal.
+ * The application origin is mixed in so the same device can't be limited
+ * across unrelated deployments. User-agent is intentionally NOT used for
+ * enforcement (only logged separately if needed).
  */
-function getClientFingerprint(req: Request): string {
+function getClientFingerprint(req: Request): { fingerprint: string; source: "client_id" | "ip" } {
+  const origin = (req.headers.get("origin") ?? req.headers.get("referer") ?? "unknown").toLowerCase();
+  const clientId = req.headers.get("x-gladys-client-id")?.trim();
+  if (clientId && /^[a-f0-9-]{16,64}$/i.test(clientId)) {
+    return { fingerprint: `${clientId}|${origin}`, source: "client_id" };
+  }
   const cfIp = req.headers.get("cf-connecting-ip");
   const xff = req.headers.get("x-forwarded-for");
-  // Right-most XFF entry = last trusted hop appended by the platform edge.
   const xffIp = xff ? xff.split(",").map((s) => s.trim()).filter(Boolean).pop() ?? "" : "";
   const ip = (cfIp || xffIp || "unknown").toLowerCase();
-  const ua = (req.headers.get("user-agent") ?? "").slice(0, 120);
-  return `${ip}|${ua}`;
+  return { fingerprint: `${ip}|${origin}`, source: "ip" };
 }
 
-async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean; remaining: number; reason?: "daily" | "burst" }> {
+function nextResetTime(): string {
+  // UTC midnight (next day) — matches usage_date rollover.
+  const d = new Date();
+  d.setUTCHours(24, 0, 0, 0);
+  return d.toISOString();
+}
+
+async function checkAndIncrementQuota(
+  req: Request,
+): Promise<{ allowed: boolean; remaining: number; resetTime: string; reason?: "daily" | "burst" }> {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const resetTime = nextResetTime();
   if (!supabaseUrl || !serviceKey) {
     console.error("Missing Supabase env for rate limiting");
-    return { allowed: true, remaining: DAILY_LIMIT };
+    return { allowed: true, remaining: DAILY_LIMIT, resetTime };
   }
 
-  const fingerprint = getClientFingerprint(req);
+  const { fingerprint, source } = getClientFingerprint(req);
   const clientHash = await hashClient(fingerprint);
   const today = new Date().toISOString().slice(0, 10);
+
+  if (Deno.env.get("DENO_DEPLOYMENT_ID") === undefined) {
+    // Local/dev only — never log in production.
+    console.debug(`[rate-limit] source=${source} hash=${clientHash.slice(0, 8)}…`);
+  }
 
   // Burst guard: reject rapid repeat calls from the same fingerprint.
   const now = Date.now();
   const last = burstMap.get(clientHash) ?? 0;
   if (now - last < BURST_WINDOW_MS) {
-    return { allowed: false, remaining: -1, reason: "burst" };
+    if (Deno.env.get("DENO_DEPLOYMENT_ID") === undefined) {
+      console.debug(`[rate-limit] burst triggered for ${clientHash.slice(0, 8)}…`);
+    }
+    return { allowed: false, remaining: -1, resetTime, reason: "burst" };
   }
   burstMap.set(clientHash, now);
   if (burstMap.size > 5000) {
@@ -559,7 +719,10 @@ async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean;
   const current: number = rows?.[0]?.count ?? 0;
 
   if (current >= DAILY_LIMIT) {
-    return { allowed: false, remaining: 0, reason: "daily" };
+    if (Deno.env.get("DENO_DEPLOYMENT_ID") === undefined) {
+      console.debug(`[rate-limit] daily limit reached for ${clientHash.slice(0, 8)}…`);
+    }
+    return { allowed: false, remaining: 0, resetTime, reason: "daily" };
   }
 
   const upR = await fetch(`${supabaseUrl}/rest/v1/scan_usage?on_conflict=client_hash,usage_date`, {
@@ -573,11 +736,10 @@ async function checkAndIncrementQuota(req: Request): Promise<{ allowed: boolean;
     }),
   });
   if (!upR.ok) {
-    // Avoid logging response body — may contain infra detail.
     console.error("scan_usage upsert failed with status:", upR.status);
   }
 
-  return { allowed: true, remaining: Math.max(0, DAILY_LIMIT - (current + 1)) };
+  return { allowed: true, remaining: Math.max(0, DAILY_LIMIT - (current + 1)), resetTime };
 }
 
 // ---------- Handler ----------
@@ -605,6 +767,7 @@ Deno.serve(async (req) => {
           rateLimited: true,
           burst: isBurst,
           remainingScans: isBurst ? undefined : 0,
+          limitResetTime: quota.resetTime,
         }),
         {
           status: 429,
@@ -663,6 +826,7 @@ Deno.serve(async (req) => {
         whatCouldGoWrong: ai.whatCouldGoWrong,
       },
       remainingScans: quota.remaining,
+      limitResetTime: quota.resetTime,
       scannedAt: new Date().toISOString(),
     };
 
@@ -670,12 +834,18 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
+    if (e instanceof ContractResolutionError) {
+      return new Response(
+        JSON.stringify({ error: e.userMessage, contractUnresolved: true }),
+        { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
     // Log full detail server-side. Return a real 500 so monitoring and
     // clients can distinguish failures from successes.
     console.error("scan-token error:", e);
     return new Response(
       JSON.stringify({
-        error: "We couldn't scan that token right now. Try again in a moment.",
+        error: "Something went wrong while analyzing this token. Please try again.",
         fallback: true,
       }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },

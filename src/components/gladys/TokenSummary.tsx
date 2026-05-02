@@ -10,8 +10,15 @@ const fmtNum = (n?: number) => {
   return `$${n.toFixed(2)}`;
 };
 
+const shortAddr = (a?: string) => {
+  if (!a) return null;
+  if (a.length <= 12) return a;
+  return `${a.slice(0, 6)}…${a.slice(-4)}`;
+};
+
 export const TokenSummary = ({ result }: { result: ScanResult }) => {
   const { token, explainer } = result;
+  const short = shortAddr(token.address);
   return (
     <div className="bg-card border border-border rounded-2xl p-6 shadow-card-soft animate-fade-up">
       <div className="flex items-start justify-between gap-4 mb-4 flex-wrap">
@@ -23,6 +30,11 @@ export const TokenSummary = ({ result }: { result: ScanResult }) => {
           <Badge variant="outline" className="mt-2 border-gold/40 text-gold bg-gold/5">
             {token.chain}
           </Badge>
+          {short && (
+            <p className="text-xs text-muted-foreground font-mono mt-2" title={token.address}>
+              Contract: {short}
+            </p>
+          )}
         </div>
         <div className="text-right">
           <p className="text-xs text-muted-foreground">Price</p>

@@ -42,4 +42,6 @@ export interface ScanResult {
     whatCouldGoWrong: string;
   };
   scannedAt: string;
+  remainingScans?: number;
+  limitResetTime?: string; // ISO timestamp when daily quota resets
 }
