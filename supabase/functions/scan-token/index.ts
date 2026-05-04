@@ -932,6 +932,12 @@ Deno.serve(async (req) => {
         { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
+    if (e instanceof TokenResolutionError) {
+      return new Response(
+        JSON.stringify({ error: e.userMessage, tokenUnresolved: true }),
+        { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
     // Log full detail server-side. Return a real 500 so monitoring and
     // clients can distinguish failures from successes.
     console.error("scan-token error:", e);
