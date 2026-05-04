@@ -51,6 +51,7 @@ const Index = () => {
               rateLimited?: boolean;
               burst?: boolean;
               contractUnresolved?: boolean;
+              tokenUnresolved?: boolean;
               limitResetTime?: string;
             }
           | null = null;
