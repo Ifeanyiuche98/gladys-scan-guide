@@ -53,7 +53,3 @@ export interface TokenSuggestion {
   name: string;
   symbol: string;
 }
-  scannedAt: string;
-  remainingScans?: number;
-  limitResetTime?: string; // ISO timestamp when daily quota resets
-}
