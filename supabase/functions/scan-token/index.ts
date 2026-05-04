@@ -176,7 +176,21 @@ class TokenResolutionError extends Error {
   }
 }
 
-// Light, safe normalization. We only collapse whitespace, lowercase, and split
+// Suggestion mode: zero exact matches, but close candidates exist. We refuse
+// to auto-pick — return options for the user to choose from.
+interface TokenSuggestion {
+  id: string;
+  name: string;
+  symbol: string;
+}
+class TokenSuggestionError extends Error {
+  constructor(public userMessage: string, public suggestions: TokenSuggestion[]) {
+    super(userMessage);
+  }
+}
+
+// Light, safe normalization. We lowercase, trim, collapse whitespace, strip
+// noisy special chars (keep letters/numbers/spaces only), and split a few
 // obviously-glued words like "trustwallettoken" → "trust wallet token" using
 // a tiny dictionary. We never invent characters or apply fuzzy edits.
 const KNOWN_WORD_SPLITS: Array<[RegExp, string]> = [
@@ -184,11 +198,18 @@ const KNOWN_WORD_SPLITS: Array<[RegExp, string]> = [
   [/binancecoin/gi, "binance coin"],
   [/shibainu/gi, "shiba inu"],
   [/bitcoincash/gi, "bitcoin cash"],
+  [/usdcoin/gi, "usd coin"],
+  [/wrappedbitcoin/gi, "wrapped bitcoin"],
+  [/wrappedether/gi, "wrapped ether"],
 ];
-function normalizeQuery(raw: string): string {
-  let s = raw.trim().toLowerCase().replace(/\s+/g, " ");
+function normalizeQuery(raw: string): { norm: string; changed: boolean } {
+  const original = raw.trim().toLowerCase();
+  let s = original
+    .replace(/[^\p{L}\p{N}\s]/gu, " ") // strip special chars
+    .replace(/\s+/g, " ")
+    .trim();
   for (const [re, repl] of KNOWN_WORD_SPLITS) s = s.replace(re, repl);
-  return s;
+  return { norm: s, changed: s !== original };
 }
 
 function devLog(msg: string) {
@@ -209,8 +230,10 @@ function devLog(msg: string) {
  *   - If zero exact matches → "Token not found".
  *   - We never auto-pick the top search hit by similarity alone.
  */
-async function resolveByNameStrict(rawInput: string): Promise<MarketSnapshot> {
-  const norm = normalizeQuery(rawInput);
+async function resolveByNameStrict(
+  rawInput: string,
+): Promise<{ snapshot: MarketSnapshot; resolutionConfidence: "High" | "Medium" }> {
+  const { norm, changed } = normalizeQuery(rawInput);
   if (!norm) throw new TokenResolutionError("Token not found. Please check the spelling.");
 
   const r = await fetchWithTimeout(
@@ -235,7 +258,16 @@ async function resolveByNameStrict(rawInput: string): Promise<MarketSnapshot> {
   devLog(`exact matches=${exact.length}`);
 
   if (exact.length === 0) {
-    throw new TokenResolutionError("Token not found. Please check the spelling.");
+    // SUGGESTION MODE — close candidates exist but no exact match. Never
+    // auto-pick. Return top 2-3 by market cap rank for the user to choose.
+    const ranked = [...coins]
+      .sort((a, b) => (a.market_cap_rank ?? 9_999_999) - (b.market_cap_rank ?? 9_999_999))
+      .slice(0, 3)
+      .map((c) => ({ id: c.id, name: c.name, symbol: (c.symbol ?? "").toUpperCase() }));
+    throw new TokenSuggestionError(
+      "We couldn't find an exact match. Did you mean one of these?",
+      ranked,
+    );
   }
 
   let chosen: { id: string; name: string; symbol: string };
@@ -255,7 +287,11 @@ async function resolveByNameStrict(rawInput: string): Promise<MarketSnapshot> {
       (top.market_cap_rank as number) <= 100 &&
       (!second || (second.market_cap_rank as number) > (top.market_cap_rank as number) + 50);
     if (!topIsDominant) {
-      throw new TokenResolutionError("Multiple tokens match this name. Please be more specific.");
+      // Equally plausible exact matches → suggestion mode (let user pick).
+      const sugg = exact
+        .slice(0, 3)
+        .map((c) => ({ id: c.id, name: c.name, symbol: (c.symbol ?? "").toUpperCase() }));
+      throw new TokenSuggestionError("Multiple tokens match. Please pick the one you meant:", sugg);
     }
     chosen = top;
   }
@@ -273,8 +309,37 @@ async function resolveByNameStrict(rawInput: string): Promise<MarketSnapshot> {
     : "Multi-chain";
 
   return {
-    name: coin.name ?? chosen.name,
-    symbol: (coin.symbol ?? chosen.symbol ?? "").toUpperCase(),
+    snapshot: {
+      name: coin.name ?? chosen.name,
+      symbol: (coin.symbol ?? chosen.symbol ?? "").toUpperCase(),
+      chain,
+      priceUsd: md.current_price?.usd,
+      marketCap: md.market_cap?.usd,
+      volume24h: md.total_volume?.usd,
+      liquidityUsd: undefined,
+      ageDays,
+      priceChange24h: md.price_change_percentage_24h,
+    },
+    // High = matched exactly as typed; Medium = matched only after normalization.
+    resolutionConfidence: changed ? "Medium" : "High",
+  };
+}
+
+// Direct lookup by CoinGecko ID — used when the user picks a suggestion.
+async function resolveByCoinGeckoId(id: string): Promise<MarketSnapshot> {
+  const coin = await fetchCoinGeckoCoin(id);
+  if (!coin) throw new TokenResolutionError("Selected token could not be loaded.");
+  const md = coin.market_data ?? {};
+  const created = coin.genesis_date ? new Date(coin.genesis_date) : null;
+  const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined;
+  const platforms = coin.platforms ?? {};
+  const chainKey = Object.keys(platforms).filter((k) => platforms[k])[0];
+  const chain = chainKey
+    ? (CG_PLATFORMS[chainKey] ?? chainKey.charAt(0).toUpperCase() + chainKey.slice(1))
+    : "Multi-chain";
+  return {
+    name: coin.name,
+    symbol: (coin.symbol ?? "").toUpperCase(),
     chain,
     priceUsd: md.current_price?.usd,
     marketCap: md.market_cap?.usd,
@@ -390,41 +455,47 @@ async function resolveContractStrict(address: string): Promise<MarketSnapshot> {
   };
 }
 
-async function gatherMarketData(input: string): Promise<MarketSnapshot> {
-  const parsed = parseInput(input);
-
-  // CONTRACT INPUT → strict chain-aware resolution. Never fall back to
-  // name/symbol search — that would resolve to the wrong token.
-  if (parsed.kind === "address") {
-    devLog(`address input chain-resolution`);
-    return await resolveContractStrict(parsed.value);
+async function gatherMarketData(
+  input: string,
+  opts?: { coingeckoId?: string },
+): Promise<{ snapshot: MarketSnapshot; resolutionConfidence: "High" | "Medium" }> {
+  // User picked a suggestion → resolve directly by CoinGecko ID.
+  if (opts?.coingeckoId) {
+    const snapshot = await resolveByCoinGeckoId(opts.coingeckoId);
+    return { snapshot, resolutionConfidence: "High" };
   }
 
-  // URL with a pair address → use dexscreener pair lookup. If pair lookup
-  // fails we do NOT fall back to fuzzy name search.
+  const parsed = parseInput(input);
+
+  if (parsed.kind === "address") {
+    devLog(`address input chain-resolution`);
+    return { snapshot: await resolveContractStrict(parsed.value), resolutionConfidence: "High" };
+  }
+
   if (parsed.kind === "url") {
     const pair = await fetchDexscreenerByPair(parsed.value);
     if (pair) {
       const created = pair.pairCreatedAt ? new Date(pair.pairCreatedAt) : null;
       const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined;
       return {
-        name: pair.baseToken?.name ?? "Unknown Token",
-        symbol: pair.baseToken?.symbol ?? "?",
-        chain: chainFromDex(pair),
-        address: pair.baseToken?.address,
-        priceUsd: pair.priceUsd ? parseFloat(pair.priceUsd) : undefined,
-        marketCap: pair.fdv ?? pair.marketCap,
-        volume24h: pair.volume?.h24,
-        liquidityUsd: pair.liquidity?.usd,
-        ageDays,
-        priceChange24h: pair.priceChange?.h24,
+        snapshot: {
+          name: pair.baseToken?.name ?? "Unknown Token",
+          symbol: pair.baseToken?.symbol ?? "?",
+          chain: chainFromDex(pair),
+          address: pair.baseToken?.address,
+          priceUsd: pair.priceUsd ? parseFloat(pair.priceUsd) : undefined,
+          marketCap: pair.fdv ?? pair.marketCap,
+          volume24h: pair.volume?.h24,
+          liquidityUsd: pair.liquidity?.usd,
+          ageDays,
+          priceChange24h: pair.priceChange?.h24,
+        },
+        resolutionConfidence: "High",
       };
     }
     throw new TokenResolutionError("We couldn't read this link. Please verify the URL or try the contract/name.");
   }
 
-  // Name/symbol input → STRICT exact-match resolution. Throws on ambiguity
-  // or zero matches; never substitutes a guessed token.
   return await resolveByNameStrict(parsed.value);
 }
 
@@ -839,13 +910,18 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { input } = await req.json();
+    const body = await req.json();
+    const input: unknown = body?.input;
+    const coingeckoId: unknown = body?.coingeckoId;
     if (!input || typeof input !== "string" || input.length > 200) {
       return new Response(JSON.stringify({ error: "Invalid input" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+    const pickedId = typeof coingeckoId === "string" && /^[a-z0-9-]{1,80}$/.test(coingeckoId)
+      ? coingeckoId
+      : undefined;
 
     // Server-side rate limit (cannot be bypassed by clearing localStorage)
     const quota = await checkAndIncrementQuota(req);
@@ -872,7 +948,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    let market = await gatherMarketData(input);
+    const gathered = await gatherMarketData(input, { coingeckoId: pickedId });
+    let market = gathered.snapshot;
+    const resolutionConfidence = gathered.resolutionConfidence;
 
     // Step 1: provisional classification using whatever we already have.
     let classification = classifyAsset(market);
@@ -887,7 +965,6 @@ Deno.serve(async (req) => {
     if ((classification === "LOW" || classification === "UNKNOWN" || classification === "MID") && looksPotentiallyMajor) {
       const enriched = await enrichWithCoinGecko(market);
       const newCls = classifyAsset(enriched);
-      // Only adopt enrichment if it upgrades the classification or fills core data.
       if (newCls === "MAJOR" || newCls === "MID" || (enriched.marketCap && !market.marketCap)) {
         market = enriched;
         classification = newCls;
@@ -897,8 +974,29 @@ Deno.serve(async (req) => {
     const { score: riskScore, breakdown } = computeRisk(market, classification);
     const verdict = verdictFromScore(riskScore);
     const opportunity = computeOpportunity(market, classification, riskScore);
-    const confidence = computeConfidence(market, classification);
+    let confidence = computeConfidence(market, classification);
     const outlook = computeOutlook(market, classification, riskScore);
+
+    // Network safety: if we couldn't confidently identify the chain, force
+    // confidence to Low and surface a visible warning. Never present a
+    // full-confidence verdict when the network is unknown.
+    const chainLower = (market.chain ?? "").toLowerCase();
+    const networkUncertain =
+      !market.chain || chainLower === "unknown" || chainLower === "multi-chain";
+    let networkWarning: string | undefined;
+    if (networkUncertain) {
+      confidence = "Low";
+      networkWarning =
+        "We couldn't confidently identify the blockchain network for this token. Please verify before proceeding.";
+    }
+
+    // Resolution confidence (Medium = matched only after normalization) caps
+    // overall confidence so it can never claim "High" when the user input was
+    // ambiguous-but-recoverable.
+    if (resolutionConfidence === "Medium" && confidence === "High") {
+      confidence = "Medium";
+    }
+
     const ai = await generateExplanation(market, riskScore, verdict, opportunity);
 
     const result = {
@@ -917,6 +1015,8 @@ Deno.serve(async (req) => {
         whyPeopleBuy: ai.whyPeopleBuy,
         whatCouldGoWrong: ai.whatCouldGoWrong,
       },
+      resolutionConfidence,
+      networkWarning,
       remainingScans: quota.remaining,
       limitResetTime: quota.resetTime,
       scannedAt: new Date().toISOString(),
@@ -926,6 +1026,16 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
+    if (e instanceof TokenSuggestionError) {
+      return new Response(
+        JSON.stringify({
+          error: e.userMessage,
+          tokenUnresolved: true,
+          suggestions: e.suggestions,
+        }),
+        { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
     if (e instanceof ContractResolutionError) {
       return new Response(
         JSON.stringify({ error: e.userMessage, contractUnresolved: true }),

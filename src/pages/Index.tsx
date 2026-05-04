@@ -3,6 +3,7 @@ import { Logo } from "@/components/gladys/Logo";
 import { ScanInput } from "@/components/gladys/ScanInput";
 import { Loader } from "@/components/gladys/Loader";
 import { Results } from "@/components/gladys/Results";
+import { Suggestions } from "@/components/gladys/Suggestions";
 import { UpgradeModal } from "@/components/gladys/UpgradeModal";
 import {
   canScan,
@@ -16,7 +17,7 @@ import {
 import { getClientId } from "@/lib/client-id";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
-import type { ScanResult } from "@/lib/scan-types";
+import type { ScanResult, TokenSuggestion } from "@/lib/scan-types";
 import { ShieldCheck, Zap, BookOpen } from "lucide-react";
 
 const Index = () => {
@@ -24,8 +25,9 @@ const Index = () => {
   const [result, setResult] = useState<ScanResult | null>(null);
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [remaining, setRemaining] = useState(getRemainingScans());
+  const [suggestions, setSuggestions] = useState<{ message: string; items: TokenSuggestion[] } | null>(null);
 
-  const handleScan = async (input: string) => {
+  const handleScan = async (input: string, opts?: { coingeckoId?: string }) => {
     if (!canScan()) {
       setShowUpgrade(true);
       return;
@@ -33,12 +35,13 @@ const Index = () => {
 
     setStatus("loading");
     setResult(null);
+    setSuggestions(null);
 
     const clientId = getClientId();
 
     try {
       const { data, error } = await supabase.functions.invoke("scan-token", {
-        body: { input },
+        body: { input, ...(opts?.coingeckoId ? { coingeckoId: opts.coingeckoId } : {}) },
         headers: { "x-gladys-client-id": clientId },
       });
 
@@ -52,6 +55,7 @@ const Index = () => {
               burst?: boolean;
               contractUnresolved?: boolean;
               tokenUnresolved?: boolean;
+              suggestions?: TokenSuggestion[];
               limitResetTime?: string;
             }
           | null = null;
@@ -74,7 +78,6 @@ const Index = () => {
               description: payload.error ?? "Too many scans in a row. Try again in a few seconds.",
             });
           } else {
-            // 429 daily limit → modal only, no error toast
             markLimitReached();
             setLimitResetTime(payload.limitResetTime);
             setRemaining(0);
@@ -94,11 +97,19 @@ const Index = () => {
           return;
         }
 
-        if ((payload as { tokenUnresolved?: boolean } | null)?.tokenUnresolved) {
+        if (payload?.tokenUnresolved) {
           setStatus("idle");
+          // Suggestion mode — show picker, do NOT auto-scan.
+          if (payload.suggestions && payload.suggestions.length > 0) {
+            setSuggestions({
+              message: payload.error ?? "Did you mean one of these?",
+              items: payload.suggestions,
+            });
+            return;
+          }
           toast({
             title: "Couldn't identify token",
-            description: payload?.error ?? "Token not found. Please check the spelling.",
+            description: payload.error ?? "Token not found. Please check the spelling.",
             variant: "destructive",
           });
           return;
@@ -159,6 +170,7 @@ const Index = () => {
   const reset = () => {
     setStatus("idle");
     setResult(null);
+    setSuggestions(null);
   };
 
   return (
@@ -189,6 +201,15 @@ const Index = () => {
             </div>
 
             <ScanInput onScan={handleScan} />
+
+            {suggestions && (
+              <Suggestions
+                message={suggestions.message}
+                suggestions={suggestions.items}
+                onPick={(s) => handleScan(s.name, { coingeckoId: s.id })}
+                onDismiss={() => setSuggestions(null)}
+              />
+            )}
 
             <div className="grid sm:grid-cols-3 gap-4 mt-12">
               <Feature icon={ShieldCheck} title="Risk Score" body="Liquidity, whales, volatility — scored /100." />
