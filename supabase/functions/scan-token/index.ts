@@ -176,7 +176,21 @@ class TokenResolutionError extends Error {
   }
 }
 
-// Light, safe normalization. We only collapse whitespace, lowercase, and split
+// Suggestion mode: zero exact matches, but close candidates exist. We refuse
+// to auto-pick — return options for the user to choose from.
+interface TokenSuggestion {
+  id: string;
+  name: string;
+  symbol: string;
+}
+class TokenSuggestionError extends Error {
+  constructor(public userMessage: string, public suggestions: TokenSuggestion[]) {
+    super(userMessage);
+  }
+}
+
+// Light, safe normalization. We lowercase, trim, collapse whitespace, strip
+// noisy special chars (keep letters/numbers/spaces only), and split a few
 // obviously-glued words like "trustwallettoken" → "trust wallet token" using
 // a tiny dictionary. We never invent characters or apply fuzzy edits.
 const KNOWN_WORD_SPLITS: Array<[RegExp, string]> = [
@@ -184,11 +198,18 @@ const KNOWN_WORD_SPLITS: Array<[RegExp, string]> = [
   [/binancecoin/gi, "binance coin"],
   [/shibainu/gi, "shiba inu"],
   [/bitcoincash/gi, "bitcoin cash"],
+  [/usdcoin/gi, "usd coin"],
+  [/wrappedbitcoin/gi, "wrapped bitcoin"],
+  [/wrappedether/gi, "wrapped ether"],
 ];
-function normalizeQuery(raw: string): string {
-  let s = raw.trim().toLowerCase().replace(/\s+/g, " ");
+function normalizeQuery(raw: string): { norm: string; changed: boolean } {
+  const original = raw.trim().toLowerCase();
+  let s = original
+    .replace(/[^\p{L}\p{N}\s]/gu, " ") // strip special chars
+    .replace(/\s+/g, " ")
+    .trim();
   for (const [re, repl] of KNOWN_WORD_SPLITS) s = s.replace(re, repl);
-  return s;
+  return { norm: s, changed: s !== original };
 }
 
 function devLog(msg: string) {
