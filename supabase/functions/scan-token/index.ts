@@ -455,41 +455,47 @@ async function resolveContractStrict(address: string): Promise<MarketSnapshot> {
   };
 }
 
-async function gatherMarketData(input: string): Promise<MarketSnapshot> {
-  const parsed = parseInput(input);
-
-  // CONTRACT INPUT → strict chain-aware resolution. Never fall back to
-  // name/symbol search — that would resolve to the wrong token.
-  if (parsed.kind === "address") {
-    devLog(`address input chain-resolution`);
-    return await resolveContractStrict(parsed.value);
+async function gatherMarketData(
+  input: string,
+  opts?: { coingeckoId?: string },
+): Promise<{ snapshot: MarketSnapshot; resolutionConfidence: "High" | "Medium" }> {
+  // User picked a suggestion → resolve directly by CoinGecko ID.
+  if (opts?.coingeckoId) {
+    const snapshot = await resolveByCoinGeckoId(opts.coingeckoId);
+    return { snapshot, resolutionConfidence: "High" };
   }
 
-  // URL with a pair address → use dexscreener pair lookup. If pair lookup
-  // fails we do NOT fall back to fuzzy name search.
+  const parsed = parseInput(input);
+
+  if (parsed.kind === "address") {
+    devLog(`address input chain-resolution`);
+    return { snapshot: await resolveContractStrict(parsed.value), resolutionConfidence: "High" };
+  }
+
   if (parsed.kind === "url") {
     const pair = await fetchDexscreenerByPair(parsed.value);
     if (pair) {
       const created = pair.pairCreatedAt ? new Date(pair.pairCreatedAt) : null;
       const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined;
       return {
-        name: pair.baseToken?.name ?? "Unknown Token",
-        symbol: pair.baseToken?.symbol ?? "?",
-        chain: chainFromDex(pair),
-        address: pair.baseToken?.address,
-        priceUsd: pair.priceUsd ? parseFloat(pair.priceUsd) : undefined,
-        marketCap: pair.fdv ?? pair.marketCap,
-        volume24h: pair.volume?.h24,
-        liquidityUsd: pair.liquidity?.usd,
-        ageDays,
-        priceChange24h: pair.priceChange?.h24,
+        snapshot: {
+          name: pair.baseToken?.name ?? "Unknown Token",
+          symbol: pair.baseToken?.symbol ?? "?",
+          chain: chainFromDex(pair),
+          address: pair.baseToken?.address,
+          priceUsd: pair.priceUsd ? parseFloat(pair.priceUsd) : undefined,
+          marketCap: pair.fdv ?? pair.marketCap,
+          volume24h: pair.volume?.h24,
+          liquidityUsd: pair.liquidity?.usd,
+          ageDays,
+          priceChange24h: pair.priceChange?.h24,
+        },
+        resolutionConfidence: "High",
       };
     }
     throw new TokenResolutionError("We couldn't read this link. Please verify the URL or try the contract/name.");
   }
 
-  // Name/symbol input → STRICT exact-match resolution. Throws on ambiguity
-  // or zero matches; never substitutes a guessed token.
   return await resolveByNameStrict(parsed.value);
 }
 
