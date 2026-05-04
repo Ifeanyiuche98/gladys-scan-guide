@@ -41,6 +41,18 @@ export interface ScanResult {
     whyPeopleBuy: string;
     whatCouldGoWrong: string;
   };
+  resolutionConfidence?: "High" | "Medium";
+  networkWarning?: string;
+  scannedAt: string;
+  remainingScans?: number;
+  limitResetTime?: string;
+}
+
+export interface TokenSuggestion {
+  id: string;
+  name: string;
+  symbol: string;
+}
   scannedAt: string;
   remainingScans?: number;
   limitResetTime?: string; // ISO timestamp when daily quota resets
