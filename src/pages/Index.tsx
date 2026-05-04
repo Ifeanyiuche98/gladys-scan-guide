@@ -3,6 +3,7 @@ import { Logo } from "@/components/gladys/Logo";
 import { ScanInput } from "@/components/gladys/ScanInput";
 import { Loader } from "@/components/gladys/Loader";
 import { Results } from "@/components/gladys/Results";
+import { Suggestions } from "@/components/gladys/Suggestions";
 import { UpgradeModal } from "@/components/gladys/UpgradeModal";
 import {
   canScan,
@@ -16,7 +17,7 @@ import {
 import { getClientId } from "@/lib/client-id";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
-import type { ScanResult } from "@/lib/scan-types";
+import type { ScanResult, TokenSuggestion } from "@/lib/scan-types";
 import { ShieldCheck, Zap, BookOpen } from "lucide-react";
 
 const Index = () => {
@@ -24,8 +25,9 @@ const Index = () => {
   const [result, setResult] = useState<ScanResult | null>(null);
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [remaining, setRemaining] = useState(getRemainingScans());
+  const [suggestions, setSuggestions] = useState<{ message: string; items: TokenSuggestion[] } | null>(null);
 
-  const handleScan = async (input: string) => {
+  const handleScan = async (input: string, opts?: { coingeckoId?: string }) => {
     if (!canScan()) {
       setShowUpgrade(true);
       return;
@@ -33,12 +35,13 @@ const Index = () => {
 
     setStatus("loading");
     setResult(null);
+    setSuggestions(null);
 
     const clientId = getClientId();
 
     try {
       const { data, error } = await supabase.functions.invoke("scan-token", {
-        body: { input },
+        body: { input, ...(opts?.coingeckoId ? { coingeckoId: opts.coingeckoId } : {}) },
         headers: { "x-gladys-client-id": clientId },
       });
 
