@@ -167,6 +167,124 @@ class ContractResolutionError extends Error {
   }
 }
 
+// Sentinel error type for unresolved name/symbol inputs. Frontend treats this
+// the same as contract resolution failure: a clean clarification message,
+// never a guessed token.
+class TokenResolutionError extends Error {
+  constructor(public userMessage: string) {
+    super(userMessage);
+  }
+}
+
+// Light, safe normalization. We only collapse whitespace, lowercase, and split
+// obviously-glued words like "trustwallettoken" → "trust wallet token" using
+// a tiny dictionary. We never invent characters or apply fuzzy edits.
+const KNOWN_WORD_SPLITS: Array<[RegExp, string]> = [
+  [/trustwallettoken/gi, "trust wallet token"],
+  [/binancecoin/gi, "binance coin"],
+  [/shibainu/gi, "shiba inu"],
+  [/bitcoincash/gi, "bitcoin cash"],
+];
+function normalizeQuery(raw: string): string {
+  let s = raw.trim().toLowerCase().replace(/\s+/g, " ");
+  for (const [re, repl] of KNOWN_WORD_SPLITS) s = s.replace(re, repl);
+  return s;
+}
+
+function devLog(msg: string) {
+  if (Deno.env.get("DENO_DEPLOYMENT_ID") === undefined) {
+    console.debug(`[resolve] ${msg}`);
+  }
+}
+
+/**
+ * Strict name/symbol resolution. NO fuzzy fallback, NO "closest match".
+ *
+ * Rules:
+ *   - Search CoinGecko, then require an EXACT match (case-insensitive) on
+ *     either the coin's name or symbol against the normalized query.
+ *   - If exactly one exact match → proceed.
+ *   - If multiple exact matches (e.g. several coins share a symbol) → ask the
+ *     user to be more specific.
+ *   - If zero exact matches → "Token not found".
+ *   - We never auto-pick the top search hit by similarity alone.
+ */
+async function resolveByNameStrict(rawInput: string): Promise<MarketSnapshot> {
+  const norm = normalizeQuery(rawInput);
+  if (!norm) throw new TokenResolutionError("Token not found. Please check the spelling.");
+
+  const r = await fetchWithTimeout(
+    `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(norm)}`,
+  );
+  const data = r && r.ok ? await r.json() : null;
+  const coins = (data?.coins ?? []) as Array<{ id: string; name: string; symbol: string; market_cap_rank?: number }>;
+
+  devLog(`name input="${rawInput}" norm="${norm}" hits=${coins.length}`);
+
+  if (coins.length === 0) {
+    throw new TokenResolutionError("Token not found. Please check the spelling.");
+  }
+
+  const normNoSpace = norm.replace(/\s+/g, "");
+  const exact = coins.filter((c) => {
+    const name = (c.name ?? "").toLowerCase();
+    const symbol = (c.symbol ?? "").toLowerCase();
+    return name === norm || symbol === norm || name.replace(/\s+/g, "") === normNoSpace;
+  });
+
+  devLog(`exact matches=${exact.length}`);
+
+  if (exact.length === 0) {
+    throw new TokenResolutionError("Token not found. Please check the spelling.");
+  }
+
+  let chosen: { id: string; name: string; symbol: string };
+  if (exact.length === 1) {
+    chosen = exact[0];
+  } else {
+    // Multiple exact matches. Only auto-resolve if ONE is overwhelmingly more
+    // established (top-100 by market cap rank) and the others are not. This
+    // covers cases like "USDT" (one canonical Tether vs. many copycats).
+    const ranked = exact
+      .filter((c) => typeof c.market_cap_rank === "number")
+      .sort((a, b) => (a.market_cap_rank as number) - (b.market_cap_rank as number));
+    const top = ranked[0];
+    const second = ranked[1];
+    const topIsDominant =
+      top &&
+      (top.market_cap_rank as number) <= 100 &&
+      (!second || (second.market_cap_rank as number) > (top.market_cap_rank as number) + 50);
+    if (!topIsDominant) {
+      throw new TokenResolutionError("Multiple tokens match this name. Please be more specific.");
+    }
+    chosen = top;
+  }
+
+  const coin = await fetchCoinGeckoCoin(chosen.id);
+  if (!coin) throw new TokenResolutionError("Token not found. Please check the spelling.");
+
+  const md = coin.market_data ?? {};
+  const created = coin.genesis_date ? new Date(coin.genesis_date) : null;
+  const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined;
+  const platforms = coin.platforms ?? {};
+  const chainKey = Object.keys(platforms).filter((k) => platforms[k])[0];
+  const chain = chainKey
+    ? (CG_PLATFORMS[chainKey] ?? chainKey.charAt(0).toUpperCase() + chainKey.slice(1))
+    : "Multi-chain";
+
+  return {
+    name: coin.name ?? chosen.name,
+    symbol: (coin.symbol ?? chosen.symbol ?? "").toUpperCase(),
+    chain,
+    priceUsd: md.current_price?.usd,
+    marketCap: md.market_cap?.usd,
+    volume24h: md.total_volume?.usd,
+    liquidityUsd: undefined,
+    ageDays,
+    priceChange24h: md.price_change_percentage_24h,
+  };
+}
+
 /**
  * Strict chain-aware contract resolution.
  *
