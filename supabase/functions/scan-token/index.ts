@@ -910,13 +910,18 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { input } = await req.json();
+    const body = await req.json();
+    const input: unknown = body?.input;
+    const coingeckoId: unknown = body?.coingeckoId;
     if (!input || typeof input !== "string" || input.length > 200) {
       return new Response(JSON.stringify({ error: "Invalid input" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+    const pickedId = typeof coingeckoId === "string" && /^[a-z0-9-]{1,80}$/.test(coingeckoId)
+      ? coingeckoId
+      : undefined;
 
     // Server-side rate limit (cannot be bypassed by clearing localStorage)
     const quota = await checkAndIncrementQuota(req);
