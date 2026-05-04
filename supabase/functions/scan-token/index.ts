@@ -396,11 +396,12 @@ async function gatherMarketData(input: string): Promise<MarketSnapshot> {
   // CONTRACT INPUT → strict chain-aware resolution. Never fall back to
   // name/symbol search — that would resolve to the wrong token.
   if (parsed.kind === "address") {
+    devLog(`address input chain-resolution`);
     return await resolveContractStrict(parsed.value);
   }
 
-  // URL with a pair address → use dexscreener pair lookup, then fall back
-  // to address resolution if needed.
+  // URL with a pair address → use dexscreener pair lookup. If pair lookup
+  // fails we do NOT fall back to fuzzy name search.
   if (parsed.kind === "url") {
     const pair = await fetchDexscreenerByPair(parsed.value);
     if (pair) {
@@ -419,39 +420,12 @@ async function gatherMarketData(input: string): Promise<MarketSnapshot> {
         priceChange24h: pair.priceChange?.h24,
       };
     }
+    throw new TokenResolutionError("We couldn't read this link. Please verify the URL or try the contract/name.");
   }
 
-  // Name/symbol input: CoinGecko search.
-  const search = await fetchCoinGeckoSearch(parsed.value);
-  if (search?.id) {
-    const coin = await fetchCoinGeckoCoin(search.id);
-    if (coin) {
-      const md = coin.market_data ?? {};
-      const created = coin.genesis_date ? new Date(coin.genesis_date) : null;
-      const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined;
-      const platforms = coin.platforms ?? {};
-      const chainKey = Object.keys(platforms).filter((k) => platforms[k])[0];
-      const chain = chainKey ? (CG_PLATFORMS[chainKey] ?? chainKey.charAt(0).toUpperCase() + chainKey.slice(1)) : "Multi-chain";
-      return {
-        name: coin.name ?? search.name,
-        symbol: (coin.symbol ?? search.symbol ?? "").toUpperCase(),
-        chain,
-        priceUsd: md.current_price?.usd,
-        marketCap: md.market_cap?.usd,
-        volume24h: md.total_volume?.usd,
-        liquidityUsd: undefined,
-        ageDays,
-        priceChange24h: md.price_change_percentage_24h,
-      };
-    }
-  }
-
-  // Last resort minimal
-  return {
-    name: parsed.value,
-    symbol: "?",
-    chain: "Unknown",
-  };
+  // Name/symbol input → STRICT exact-match resolution. Throws on ambiguity
+  // or zero matches; never substitutes a guessed token.
+  return await resolveByNameStrict(parsed.value);
 }
 
 // ---------- Asset Classification (MANDATORY FIRST STEP) ----------
