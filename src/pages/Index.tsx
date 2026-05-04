@@ -51,6 +51,7 @@ const Index = () => {
               rateLimited?: boolean;
               burst?: boolean;
               contractUnresolved?: boolean;
+              tokenUnresolved?: boolean;
               limitResetTime?: string;
             }
           | null = null;
@@ -88,6 +89,16 @@ const Index = () => {
           toast({
             title: "Contract not recognized",
             description: payload.error ?? "We couldn't verify this contract on supported networks.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        if ((payload as { tokenUnresolved?: boolean } | null)?.tokenUnresolved) {
+          setStatus("idle");
+          toast({
+            title: "Couldn't identify token",
+            description: payload?.error ?? "Token not found. Please check the spelling.",
             variant: "destructive",
           });
           return;
