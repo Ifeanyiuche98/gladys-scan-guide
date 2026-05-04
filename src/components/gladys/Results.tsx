@@ -17,9 +17,16 @@ interface Props {
 
 export const Results = ({ result, onScanAnother }: Props) => (
   <div className="space-y-5">
+    {/* Network safety warning — shown when chain couldn't be confidently identified */}
+    {result.networkWarning && (
+      <div className="bg-amber-500/10 border border-amber-500/40 rounded-2xl p-4 text-sm text-amber-200 animate-fade-up">
+        <p className="font-semibold mb-1">⚠ Network not confidently identified</p>
+        <p className="text-amber-100/80">{result.networkWarning}</p>
+      </div>
+    )}
+
     {/* 1. Asset name + basic info */}
     <TokenSummary result={result} />
-
     {/* 2. Risk Score */}
     <RiskScore score={result.riskScore} breakdown={result.riskBreakdown} />
 
