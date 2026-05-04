@@ -230,8 +230,10 @@ function devLog(msg: string) {
  *   - If zero exact matches → "Token not found".
  *   - We never auto-pick the top search hit by similarity alone.
  */
-async function resolveByNameStrict(rawInput: string): Promise<MarketSnapshot> {
-  const norm = normalizeQuery(rawInput);
+async function resolveByNameStrict(
+  rawInput: string,
+): Promise<{ snapshot: MarketSnapshot; resolutionConfidence: "High" | "Medium" }> {
+  const { norm, changed } = normalizeQuery(rawInput);
   if (!norm) throw new TokenResolutionError("Token not found. Please check the spelling.");
 
   const r = await fetchWithTimeout(
@@ -256,7 +258,16 @@ async function resolveByNameStrict(rawInput: string): Promise<MarketSnapshot> {
   devLog(`exact matches=${exact.length}`);
 
   if (exact.length === 0) {
-    throw new TokenResolutionError("Token not found. Please check the spelling.");
+    // SUGGESTION MODE — close candidates exist but no exact match. Never
+    // auto-pick. Return top 2-3 by market cap rank for the user to choose.
+    const ranked = [...coins]
+      .sort((a, b) => (a.market_cap_rank ?? 9_999_999) - (b.market_cap_rank ?? 9_999_999))
+      .slice(0, 3)
+      .map((c) => ({ id: c.id, name: c.name, symbol: (c.symbol ?? "").toUpperCase() }));
+    throw new TokenSuggestionError(
+      "We couldn't find an exact match. Did you mean one of these?",
+      ranked,
+    );
   }
 
   let chosen: { id: string; name: string; symbol: string };
@@ -276,7 +287,11 @@ async function resolveByNameStrict(rawInput: string): Promise<MarketSnapshot> {
       (top.market_cap_rank as number) <= 100 &&
       (!second || (second.market_cap_rank as number) > (top.market_cap_rank as number) + 50);
     if (!topIsDominant) {
-      throw new TokenResolutionError("Multiple tokens match this name. Please be more specific.");
+      // Equally plausible exact matches → suggestion mode (let user pick).
+      const sugg = exact
+        .slice(0, 3)
+        .map((c) => ({ id: c.id, name: c.name, symbol: (c.symbol ?? "").toUpperCase() }));
+      throw new TokenSuggestionError("Multiple tokens match. Please pick the one you meant:", sugg);
     }
     chosen = top;
   }
@@ -294,8 +309,37 @@ async function resolveByNameStrict(rawInput: string): Promise<MarketSnapshot> {
     : "Multi-chain";
 
   return {
-    name: coin.name ?? chosen.name,
-    symbol: (coin.symbol ?? chosen.symbol ?? "").toUpperCase(),
+    snapshot: {
+      name: coin.name ?? chosen.name,
+      symbol: (coin.symbol ?? chosen.symbol ?? "").toUpperCase(),
+      chain,
+      priceUsd: md.current_price?.usd,
+      marketCap: md.market_cap?.usd,
+      volume24h: md.total_volume?.usd,
+      liquidityUsd: undefined,
+      ageDays,
+      priceChange24h: md.price_change_percentage_24h,
+    },
+    // High = matched exactly as typed; Medium = matched only after normalization.
+    resolutionConfidence: changed ? "Medium" : "High",
+  };
+}
+
+// Direct lookup by CoinGecko ID — used when the user picks a suggestion.
+async function resolveByCoinGeckoId(id: string): Promise<MarketSnapshot> {
+  const coin = await fetchCoinGeckoCoin(id);
+  if (!coin) throw new TokenResolutionError("Selected token could not be loaded.");
+  const md = coin.market_data ?? {};
+  const created = coin.genesis_date ? new Date(coin.genesis_date) : null;
+  const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86_400_000) : undefined;
+  const platforms = coin.platforms ?? {};
+  const chainKey = Object.keys(platforms).filter((k) => platforms[k])[0];
+  const chain = chainKey
+    ? (CG_PLATFORMS[chainKey] ?? chainKey.charAt(0).toUpperCase() + chainKey.slice(1))
+    : "Multi-chain";
+  return {
+    name: coin.name,
+    symbol: (coin.symbol ?? "").toUpperCase(),
     chain,
     priceUsd: md.current_price?.usd,
     marketCap: md.market_cap?.usd,
