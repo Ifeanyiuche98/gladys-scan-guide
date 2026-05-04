@@ -170,6 +170,7 @@ const Index = () => {
   const reset = () => {
     setStatus("idle");
     setResult(null);
+    setSuggestions(null);
   };
 
   return (
