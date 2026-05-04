@@ -55,6 +55,7 @@ const Index = () => {
               burst?: boolean;
               contractUnresolved?: boolean;
               tokenUnresolved?: boolean;
+              suggestions?: TokenSuggestion[];
               limitResetTime?: string;
             }
           | null = null;
@@ -77,7 +78,6 @@ const Index = () => {
               description: payload.error ?? "Too many scans in a row. Try again in a few seconds.",
             });
           } else {
-            // 429 daily limit → modal only, no error toast
             markLimitReached();
             setLimitResetTime(payload.limitResetTime);
             setRemaining(0);
@@ -97,11 +97,19 @@ const Index = () => {
           return;
         }
 
-        if ((payload as { tokenUnresolved?: boolean } | null)?.tokenUnresolved) {
+        if (payload?.tokenUnresolved) {
           setStatus("idle");
+          // Suggestion mode — show picker, do NOT auto-scan.
+          if (payload.suggestions && payload.suggestions.length > 0) {
+            setSuggestions({
+              message: payload.error ?? "Did you mean one of these?",
+              items: payload.suggestions,
+            });
+            return;
+          }
           toast({
             title: "Couldn't identify token",
-            description: payload?.error ?? "Token not found. Please check the spelling.",
+            description: payload.error ?? "Token not found. Please check the spelling.",
             variant: "destructive",
           });
           return;
