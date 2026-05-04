@@ -93,6 +93,16 @@ const Index = () => {
           return;
         }
 
+        if ((payload as { tokenUnresolved?: boolean } | null)?.tokenUnresolved) {
+          setStatus("idle");
+          toast({
+            title: "Couldn't identify token",
+            description: payload?.error ?? "Token not found. Please check the spelling.",
+            variant: "destructive",
+          });
+          return;
+        }
+
         // 500 / unknown server failure
         if (httpStatus === 500 || httpStatus === undefined) {
           setStatus("idle");
