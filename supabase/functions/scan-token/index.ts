@@ -948,7 +948,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    let market = await gatherMarketData(input);
+    const gathered = await gatherMarketData(input, { coingeckoId: pickedId });
+    let market = gathered.snapshot;
+    const resolutionConfidence = gathered.resolutionConfidence;
 
     // Step 1: provisional classification using whatever we already have.
     let classification = classifyAsset(market);
@@ -963,7 +965,6 @@ Deno.serve(async (req) => {
     if ((classification === "LOW" || classification === "UNKNOWN" || classification === "MID") && looksPotentiallyMajor) {
       const enriched = await enrichWithCoinGecko(market);
       const newCls = classifyAsset(enriched);
-      // Only adopt enrichment if it upgrades the classification or fills core data.
       if (newCls === "MAJOR" || newCls === "MID" || (enriched.marketCap && !market.marketCap)) {
         market = enriched;
         classification = newCls;
@@ -973,8 +974,29 @@ Deno.serve(async (req) => {
     const { score: riskScore, breakdown } = computeRisk(market, classification);
     const verdict = verdictFromScore(riskScore);
     const opportunity = computeOpportunity(market, classification, riskScore);
-    const confidence = computeConfidence(market, classification);
+    let confidence = computeConfidence(market, classification);
     const outlook = computeOutlook(market, classification, riskScore);
+
+    // Network safety: if we couldn't confidently identify the chain, force
+    // confidence to Low and surface a visible warning. Never present a
+    // full-confidence verdict when the network is unknown.
+    const chainLower = (market.chain ?? "").toLowerCase();
+    const networkUncertain =
+      !market.chain || chainLower === "unknown" || chainLower === "multi-chain";
+    let networkWarning: string | undefined;
+    if (networkUncertain) {
+      confidence = "Low";
+      networkWarning =
+        "We couldn't confidently identify the blockchain network for this token. Please verify before proceeding.";
+    }
+
+    // Resolution confidence (Medium = matched only after normalization) caps
+    // overall confidence so it can never claim "High" when the user input was
+    // ambiguous-but-recoverable.
+    if (resolutionConfidence === "Medium" && confidence === "High") {
+      confidence = "Medium";
+    }
+
     const ai = await generateExplanation(market, riskScore, verdict, opportunity);
 
     const result = {
@@ -993,6 +1015,8 @@ Deno.serve(async (req) => {
         whyPeopleBuy: ai.whyPeopleBuy,
         whatCouldGoWrong: ai.whatCouldGoWrong,
       },
+      resolutionConfidence,
+      networkWarning,
       remainingScans: quota.remaining,
       limitResetTime: quota.resetTime,
       scannedAt: new Date().toISOString(),
@@ -1002,6 +1026,16 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
+    if (e instanceof TokenSuggestionError) {
+      return new Response(
+        JSON.stringify({
+          error: e.userMessage,
+          tokenUnresolved: true,
+          suggestions: e.suggestions,
+        }),
+        { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
     if (e instanceof ContractResolutionError) {
       return new Response(
         JSON.stringify({ error: e.userMessage, contractUnresolved: true }),
