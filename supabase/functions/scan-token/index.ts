@@ -25,6 +25,15 @@ interface MarketSnapshot {
   liquidityUsd?: number;
   ageDays?: number;
   priceChange24h?: number;
+  categories?: string[];
+}
+
+// Heuristic: detect meme/speculative/hype-driven tokens from CoinGecko categories.
+function isMemeOrSpeculative(m: MarketSnapshot): boolean {
+  const cats = (m.categories ?? []).map((c) => c.toLowerCase());
+  if (cats.length === 0) return false;
+  const flags = ["meme", "memes", "dog", "cat", "frog", "community", "hype", "fan token"];
+  return cats.some((c) => flags.some((f) => c.includes(f)));
 }
 
 // ---------- Input normalization ----------
