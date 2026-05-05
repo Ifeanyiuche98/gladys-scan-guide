@@ -971,7 +971,16 @@ Deno.serve(async (req) => {
       }
     }
 
-    const { score: riskScore, breakdown } = computeRisk(market, classification);
+    const { score: baseScore, breakdown } = computeRisk(market, classification);
+    // Volume-based safety cap: prevent low-activity tokens from appearing artificially safe.
+    // Applied AFTER base score, BEFORE verdict classification.
+    const vol24h = market.volume24h ?? 0;
+    let riskScore = baseScore;
+    if (vol24h > 0 && vol24h < 10_000) {
+      riskScore = Math.min(riskScore, 50);
+    } else if (vol24h > 0 && vol24h < 50_000) {
+      riskScore = Math.min(riskScore, 60);
+    }
     const verdict = verdictFromScore(riskScore);
     const opportunity = computeOpportunity(market, classification, riskScore);
     let confidence = computeConfidence(market, classification);
