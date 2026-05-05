@@ -160,16 +160,28 @@ export const RedFlags = ({ result }: Props) => {
   }
 
   if (flags.length === 0) {
+    // Structural risk detection — speculative / no clear utility / hype-driven.
+    const explainerText = `${result.explainer?.summary ?? ""} ${result.explainer?.whyPeopleBuy ?? ""} ${result.explainer?.whatItDoes ?? ""}`.toLowerCase();
+    const speculativeKeywords = /\b(meme|hype|speculat|no clear utility|no real utility|no use case|trading interest|community token|fan token|driven (mainly )?by (trading|speculation|hype))\b/;
+    const structuralRisk =
+      result.opportunity?.tag === "Overhyped" ||
+      (result.classification !== "MAJOR" && speculativeKeywords.test(explainerText));
+
+    const title = structuralRisk ? "No Technical Red Flags" : "No Major Red Flags";
+    const body = structuralRisk
+      ? "No technical red flags detected, but structural risks remain. This token's value appears driven more by speculation than by clear utility — proceed with caution."
+      : "No major red flags detected — but always do your own research.";
+
     return (
       <Card className="border-border/60 bg-card/60 backdrop-blur">
         <CardHeader className="pb-3">
           <CardTitle className="text-base sm:text-lg flex items-center gap-2">
-            <span aria-hidden>✅</span>
-            <span>No Major Red Flags</span>
+            <span aria-hidden>{structuralRisk ? "⚠️" : "✅"}</span>
+            <span>{title}</span>
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-foreground/80">No major red flags detected — but always do your own research.</p>
+          <p className="text-sm text-foreground/80">{body}</p>
         </CardContent>
       </Card>
     );
