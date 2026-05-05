@@ -984,31 +984,34 @@ Deno.serve(async (req) => {
     }
 
     const { score: baseScore, breakdown } = computeRisk(market, classification);
-    // Volume-based safety cap: prevent low-activity tokens from appearing artificially safe.
-    // Applied AFTER base score, BEFORE verdict classification.
+
+    // Normalize inputs to neutral defaults so caps don't silently skip when
+    // optional fields are missing (per calibration spec).
+    const liquidityScore = Number.isFinite(breakdown.liquidity) ? breakdown.liquidity : 50;
+    const whaleScore = Number.isFinite(breakdown.whaleConcentration) ? breakdown.whaleConcentration : 50;
     const vol24h = market.volume24h ?? 0;
+
     let riskScore = baseScore;
-    if (vol24h > 0 && vol24h < 10_000) {
+
+    // Step 2: Volume-based hard caps (low activity = artificially safe risk).
+    if (vol24h < 10_000) {
       riskScore = Math.min(riskScore, 50);
-    } else if (vol24h > 0 && vol24h < 50_000) {
+    } else if (vol24h < 50_000) {
       riskScore = Math.min(riskScore, 60);
     }
 
-    // Mid-tier soft cap: speculative-but-active tokens with thin liquidity and
-    // concentrated holders shouldn't sit in the same band as blue-chips.
-    if (
-      vol24h >= 50_000 && vol24h <= 1_000_000 &&
-      breakdown.liquidity < 70 &&
-      breakdown.whaleConcentration > 50
-    ) {
+    // Step 3: Mid-tier hard cap — moderate volume + weak structural metrics.
+    if (vol24h < 1_000_000 && (liquidityScore <= 60 || whaleScore >= 50)) {
       riskScore = Math.min(riskScore, 75);
     }
 
-    // Meme / speculative / hype-driven adjustment: light penalty + hard cap.
-    if (isMemeOrSpeculative(market)) {
-      riskScore = Math.max(0, riskScore - 12);
-      riskScore = Math.min(riskScore, 80);
+    // Step 4: Low-liquidity penalty (strong signal, measurable).
+    if (liquidityScore <= 55) {
+      riskScore = Math.max(0, riskScore - 10);
     }
+
+    // Safety floor: never below 0.
+    riskScore = Math.max(0, riskScore);
 
     const verdict = verdictFromScore(riskScore);
     const opportunity = computeOpportunity(market, classification, riskScore);
