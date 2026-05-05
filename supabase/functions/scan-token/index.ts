@@ -983,6 +983,22 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Mid-tier soft cap: speculative-but-active tokens with thin liquidity and
+    // concentrated holders shouldn't sit in the same band as blue-chips.
+    if (
+      vol24h >= 50_000 && vol24h <= 1_000_000 &&
+      breakdown.liquidity < 70 &&
+      breakdown.whaleConcentration > 50
+    ) {
+      riskScore = Math.min(riskScore, 75);
+    }
+
+    // Meme / speculative / hype-driven adjustment: light penalty + hard cap.
+    if (isMemeOrSpeculative(market)) {
+      riskScore = Math.max(0, riskScore - 12);
+      riskScore = Math.min(riskScore, 80);
+    }
+
     const { score: baseScore, breakdown } = computeRisk(market, classification);
     // Volume-based safety cap: prevent low-activity tokens from appearing artificially safe.
     // Applied AFTER base score, BEFORE verdict classification.
