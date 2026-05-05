@@ -548,6 +548,7 @@ async function enrichWithCoinGecko(m: MarketSnapshot): Promise<MarketSnapshot> {
     // the classification layer treats this correctly (deep global liquidity).
     ageDays: ageDays ?? m.ageDays,
     priceChange24h: md.price_change_percentage_24h ?? m.priceChange24h,
+    categories: Array.isArray(coin.categories) ? coin.categories : m.categories,
   };
 }
 
