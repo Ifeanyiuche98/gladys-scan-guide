@@ -357,6 +357,7 @@ async function resolveByCoinGeckoId(id: string): Promise<MarketSnapshot> {
     liquidityUsd: undefined,
     ageDays,
     priceChange24h: md.price_change_percentage_24h,
+    categories: Array.isArray(coin.categories) ? coin.categories : undefined,
   };
 }
 
