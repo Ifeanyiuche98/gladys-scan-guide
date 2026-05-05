@@ -328,6 +328,7 @@ async function resolveByNameStrict(
       liquidityUsd: undefined,
       ageDays,
       priceChange24h: md.price_change_percentage_24h,
+      categories: Array.isArray(coin.categories) ? coin.categories : undefined,
     },
     // High = matched exactly as typed; Medium = matched only after normalization.
     resolutionConfidence: changed ? "Medium" : "High",
