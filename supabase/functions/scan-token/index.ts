@@ -25,6 +25,15 @@ interface MarketSnapshot {
   liquidityUsd?: number;
   ageDays?: number;
   priceChange24h?: number;
+  categories?: string[];
+}
+
+// Heuristic: detect meme/speculative/hype-driven tokens from CoinGecko categories.
+function isMemeOrSpeculative(m: MarketSnapshot): boolean {
+  const cats = (m.categories ?? []).map((c) => c.toLowerCase());
+  if (cats.length === 0) return false;
+  const flags = ["meme", "memes", "dog", "cat", "frog", "community", "hype", "fan token"];
+  return cats.some((c) => flags.some((f) => c.includes(f)));
 }
 
 // ---------- Input normalization ----------
@@ -319,6 +328,7 @@ async function resolveByNameStrict(
       liquidityUsd: undefined,
       ageDays,
       priceChange24h: md.price_change_percentage_24h,
+      categories: Array.isArray(coin.categories) ? coin.categories : undefined,
     },
     // High = matched exactly as typed; Medium = matched only after normalization.
     resolutionConfidence: changed ? "Medium" : "High",
@@ -347,6 +357,7 @@ async function resolveByCoinGeckoId(id: string): Promise<MarketSnapshot> {
     liquidityUsd: undefined,
     ageDays,
     priceChange24h: md.price_change_percentage_24h,
+    categories: Array.isArray(coin.categories) ? coin.categories : undefined,
   };
 }
 
@@ -537,6 +548,7 @@ async function enrichWithCoinGecko(m: MarketSnapshot): Promise<MarketSnapshot> {
     // the classification layer treats this correctly (deep global liquidity).
     ageDays: ageDays ?? m.ageDays,
     priceChange24h: md.price_change_percentage_24h ?? m.priceChange24h,
+    categories: Array.isArray(coin.categories) ? coin.categories : m.categories,
   };
 }
 
@@ -981,6 +993,23 @@ Deno.serve(async (req) => {
     } else if (vol24h > 0 && vol24h < 50_000) {
       riskScore = Math.min(riskScore, 60);
     }
+
+    // Mid-tier soft cap: speculative-but-active tokens with thin liquidity and
+    // concentrated holders shouldn't sit in the same band as blue-chips.
+    if (
+      vol24h >= 50_000 && vol24h <= 1_000_000 &&
+      breakdown.liquidity < 70 &&
+      breakdown.whaleConcentration > 50
+    ) {
+      riskScore = Math.min(riskScore, 75);
+    }
+
+    // Meme / speculative / hype-driven adjustment: light penalty + hard cap.
+    if (isMemeOrSpeculative(market)) {
+      riskScore = Math.max(0, riskScore - 12);
+      riskScore = Math.min(riskScore, 80);
+    }
+
     const verdict = verdictFromScore(riskScore);
     const opportunity = computeOpportunity(market, classification, riskScore);
     let confidence = computeConfidence(market, classification);
