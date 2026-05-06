@@ -78,6 +78,7 @@ export const Results = ({ result, onScanAnother }: Props) => (
         <RotateCw className="h-4 w-4" />
         Scan Another Token
       </Button>
+      </div>
     </div>
   </div>
 );
