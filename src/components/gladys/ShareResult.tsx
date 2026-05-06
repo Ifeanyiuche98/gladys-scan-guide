@@ -10,75 +10,92 @@ const verdictEmoji: Record<Verdict, string> = {
   "AVOID": "🚨",
 };
 
-function buildKeyInsights(result: ScanResult): string[] {
+function buildKeyRisks(result: ScanResult): string[] {
   const { token, riskBreakdown, classification, verdict } = result;
-  const insights: { weight: number; text: string }[] = [];
+  const risks: { weight: number; text: string }[] = [];
 
   if (classification === "MAJOR") {
-    insights.push({ weight: 100, text: "Widely adopted asset" });
-    insights.push({ weight: 90, text: "Deep global liquidity" });
-    insights.push({ weight: 80, text: "High trading activity" });
-    return insights.slice(0, 3).map((i) => i.text);
+    // For majors, surface positives framed as reassurance instead of risks.
+    return ["Widely adopted asset", "Deep global liquidity", "High trading activity"];
   }
 
   if (token.liquidityUsd !== undefined) {
-    if (token.liquidityUsd < 25_000) insights.push({ weight: 95, text: "Extremely low liquidity" });
-    else if (token.liquidityUsd < 100_000) insights.push({ weight: 75, text: "Low liquidity" });
-    else if (token.liquidityUsd < 500_000) insights.push({ weight: 40, text: "Thin liquidity" });
-    else if (verdict === "SAFE-ISH") insights.push({ weight: 30, text: "Healthy liquidity" });
+    if (token.liquidityUsd < 25_000) risks.push({ weight: 95, text: "Extremely low liquidity (very hard to exit)" });
+    else if (token.liquidityUsd < 100_000) risks.push({ weight: 75, text: "Low liquidity (hard to exit)" });
+    else if (token.liquidityUsd < 500_000) risks.push({ weight: 40, text: "Thin liquidity (slippage on bigger trades)" });
   }
 
   if (token.volume24h !== undefined) {
-    if (token.volume24h < 1_000) insights.push({ weight: 90, text: "Limited trading activity" });
-    else if (token.volume24h < 50_000) insights.push({ weight: 65, text: "Weak trading activity" });
-    else if (verdict === "SAFE-ISH" && token.volume24h > 250_000)
-      insights.push({ weight: 30, text: "Steady trading activity" });
+    if (token.volume24h < 1_000) risks.push({ weight: 92, text: "Almost no trading activity" });
+    else if (token.volume24h < 50_000) risks.push({ weight: 65, text: "Very low trading activity" });
   }
 
-  if (riskBreakdown.whaleConcentration < 35) insights.push({ weight: 80, text: "High whale concentration" });
-  else if (riskBreakdown.whaleConcentration < 60) insights.push({ weight: 50, text: "Somewhat concentrated holdings" });
+  if (riskBreakdown.whaleConcentration < 35) risks.push({ weight: 80, text: "Heavy whale concentration (few wallets control supply)" });
+  else if (riskBreakdown.whaleConcentration < 60) risks.push({ weight: 50, text: "Some whale concentration" });
 
   if (token.ageDays !== undefined) {
-    if (token.ageDays < 7) insights.push({ weight: 70, text: "Brand new token" });
-    else if (token.ageDays < 30) insights.push({ weight: 45, text: "Less than a month old" });
-    else if (token.ageDays > 365 && verdict === "SAFE-ISH")
-      insights.push({ weight: 25, text: "Established track record" });
+    if (token.ageDays < 7) risks.push({ weight: 78, text: "Brand new token (no track record)" });
+    else if (token.ageDays < 30) risks.push({ weight: 45, text: "Less than a month old" });
   }
 
   const change = Math.abs(token.priceChange24h ?? 0);
-  if (change > 100) insights.push({ weight: 70, text: "Extreme 24h price swings" });
-  else if (change > 40) insights.push({ weight: 45, text: "Big 24h price swings" });
+  if (change > 100) risks.push({ weight: 70, text: "Extreme 24h price swings" });
+  else if (change > 40) risks.push({ weight: 45, text: "Big 24h price swings" });
 
-  if (insights.length === 0) {
-    insights.push({
+  if (risks.length === 0) {
+    risks.push({
       weight: 1,
       text: verdict === "SAFE-ISH" ? "No major risks detected" : "Mixed risk signals",
     });
   }
 
-  return insights
+  return risks
     .sort((a, b) => b.weight - a.weight)
     .slice(0, 3)
-    .map((i) => i.text);
+    .map((r) => r.text);
+}
+
+function buildInterpretation(result: ScanResult): string {
+  const { token, riskBreakdown, classification, verdict } = result;
+
+  if (classification === "MAJOR") {
+    return "👉 This is a major asset — standard market risk still applies.";
+  }
+
+  const lowVol = token.volume24h !== undefined && token.volume24h < 50_000;
+  const lowLiq = token.liquidityUsd !== undefined && token.liquidityUsd < 100_000;
+  const whales = riskBreakdown.whaleConcentration < 50;
+  const young = token.ageDays !== undefined && token.ageDays < 30;
+
+  if (lowVol && lowLiq) return "👉 This isn't very active — entering is easy, exiting may be difficult.";
+  if (lowLiq) return "👉 Liquidity is thin — getting out at a fair price could be tough.";
+  if (lowVol) return "👉 Trading is quiet — fewer real buyers if you want to sell.";
+  if (whales) return "👉 A few wallets hold a lot — they can move the price quickly.";
+  if (young) return "👉 Very new token — there's no real history to judge it on yet.";
+  if (verdict === "AVOID") return "👉 Multiple risk signals — worth a closer look before buying.";
+  if (verdict === "CAUTION") return "👉 Mixed signals — proceed carefully and size small.";
+  return "👉 Looks reasonable on the basics, but always do your own research.";
 }
 
 function buildShareText(result: ScanResult): string {
-  const { token, verdict, riskScore, confidence, outlook } = result;
-  const name = token.symbol ? `${token.name} ($${token.symbol})` : token.name;
-  const insights = buildKeyInsights(result);
+  const { token, verdict, riskScore } = result;
+  const sym = token.symbol && token.symbol !== "?" ? token.symbol : token.name;
+  const risks = buildKeyRisks(result);
   const appLink = typeof window !== "undefined" ? window.location.origin : "https://gladys-scan-guide.lovable.app";
 
   return [
-    `Just scanned ${name} on GLADYS Scan 🐺`,
+    `⚠️ Thinking of buying ${token.name} ($${sym})?`,
+    `GLADYS scan result 👇`,
     ``,
     `Verdict: ${verdictEmoji[verdict]} ${verdict}`,
-    `Risk Score: ${riskScore}/100`,
-    `Confidence: ${confidence} • Outlook: ${outlook}`,
+    `Score: ${riskScore}/100`,
     ``,
-    `Key insights:`,
-    ...insights.map((i) => `- ${i}`),
+    `Key risks:`,
+    ...risks.map((r) => `- ${r}`),
     ``,
-    `Scan before you ape:`,
+    buildInterpretation(result),
+    ``,
+    `Check it yourself:`,
     appLink,
   ].join("\n");
 }
