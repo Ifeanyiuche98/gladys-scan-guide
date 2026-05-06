@@ -49,7 +49,18 @@ export const Results = ({ result, onScanAnother }: Props) => (
     {/* 5. Red Flags (conditional content for MAJOR vs others handled inside) */}
     <RedFlags result={result} />
 
-    <OpportunitySignal tag={result.opportunity.tag} reason={result.opportunity.reason} />
+    {(() => {
+      const explainerText = `${result.explainer?.summary ?? ""} ${result.explainer?.whyPeopleBuy ?? ""} ${result.explainer?.whatItDoes ?? ""}`.toLowerCase();
+      const speculativeKeywords = /\b(meme|hype|speculat|no clear utility|no real utility|no use case|trading interest|community token|fan token|driven (mainly )?by (trading|speculation|hype))\b/;
+      const structuralRisk =
+        result.opportunity.tag === "Overhyped" ||
+        (result.classification !== "MAJOR" && speculativeKeywords.test(explainerText));
+      const reason =
+        structuralRisk && /active trading.*reasonable fundamentals/i.test(result.opportunity.reason)
+          ? "Active trading, but driven largely by market sentiment rather than strong fundamentals."
+          : result.opportunity.reason;
+      return <OpportunitySignal tag={result.opportunity.tag} reason={reason} />;
+    })()}
     <BeginnerMode explainer={result.explainer} />
 
     <div className="pt-2 pb-4 flex flex-col sm:flex-row gap-3 justify-center items-center">
