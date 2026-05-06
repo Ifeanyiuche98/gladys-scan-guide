@@ -63,7 +63,11 @@ export const Results = ({ result, onScanAnother }: Props) => (
     })()}
     <BeginnerMode explainer={result.explainer} />
 
-    <div className="pt-2 pb-4 flex flex-col sm:flex-row gap-3 justify-center items-center">
+    <div className="pt-2 pb-4 flex flex-col gap-3 justify-center items-center">
+      <p className="text-sm text-muted-foreground text-center max-w-md">
+        Someone thinking of buying this? Share this result with them before they invest.
+      </p>
+      <div className="flex flex-col sm:flex-row gap-3 justify-center items-center">
       <ShareResult result={result} />
       <Button
         onClick={onScanAnother}
@@ -74,6 +78,7 @@ export const Results = ({ result, onScanAnother }: Props) => (
         <RotateCw className="h-4 w-4" />
         Scan Another Token
       </Button>
+      </div>
     </div>
   </div>
 );
