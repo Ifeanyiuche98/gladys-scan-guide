@@ -109,60 +109,119 @@ interface Props {
 
 export const ShareResult = ({ result, variant = "full" }: Props) => {
   const [copied, setCopied] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   const handleShare = async () => {
     const text = buildShareText(result);
     const title = `GLADYS Scan: ${result.token.name}`;
 
-    // Try native share first (mobile-friendly)
     if (typeof navigator !== "undefined" && navigator.share) {
       try {
         await navigator.share({ title, text });
         return;
       } catch (err) {
-        // User cancelled or share failed — fall through to clipboard
         if ((err as Error)?.name === "AbortError") return;
       }
     }
 
-    // Clipboard fallback
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      toast({
-        title: "Copied to clipboard",
-        description: "Share the result anywhere you like.",
-      });
+      toast({ title: "Copied to clipboard", description: "Share the result anywhere you like." });
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      toast({
-        title: "Couldn't share",
-        description: "Try selecting and copying the result manually.",
-        variant: "destructive",
-      });
+      toast({ title: "Couldn't share", description: "Try selecting and copying the result manually.", variant: "destructive" });
     }
   };
 
+  const handleShareCard = async () => {
+    if (!cardRef.current) return;
+    setGenerating(true);
+    try {
+      const dataUrl = await toPng(cardRef.current, {
+        cacheBust: true,
+        pixelRatio: 2,
+        backgroundColor: "#0a0c10",
+      });
+      const blob = await (await fetch(dataUrl)).blob();
+      const file = new File([blob], `gladys-${result.token.symbol || result.token.name}.png`, { type: "image/png" });
+
+      // Try native share with file
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.canShare &&
+        navigator.canShare({ files: [file] }) &&
+        navigator.share
+      ) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: `GLADYS Scan: ${result.token.name}`,
+            text: `${verdictEmoji[result.verdict]} ${result.verdict} — ${result.riskScore}/100`,
+          });
+          return;
+        } catch (err) {
+          if ((err as Error)?.name === "AbortError") return;
+        }
+      }
+
+      // Fallback: download
+      const link = document.createElement("a");
+      link.href = dataUrl;
+      link.download = file.name;
+      link.click();
+      toast({ title: "Card downloaded", description: "Share the image anywhere you like." });
+    } catch {
+      toast({ title: "Couldn't generate card", description: "Please try again.", variant: "destructive" });
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  // Off-screen card for rendering
+  const offscreenCard = (
+    <div style={{ position: "fixed", left: -10000, top: 0, pointerEvents: "none" }} aria-hidden>
+      <ShareCard ref={cardRef} result={result} />
+    </div>
+  );
+
   if (variant === "icon") {
     return (
-      <button
-        onClick={handleShare}
-        aria-label="Share scan result"
-        className="inline-flex items-center justify-center h-9 w-9 rounded-full bg-gold/10 ring-1 ring-gold/30 text-gold hover:bg-gold/20 transition-colors"
-      >
-        <Share2 className="h-4 w-4" />
-      </button>
+      <>
+        {offscreenCard}
+        <button
+          onClick={handleShare}
+          aria-label="Share scan result"
+          className="inline-flex items-center justify-center h-9 w-9 rounded-full bg-gold/10 ring-1 ring-gold/30 text-gold hover:bg-gold/20 transition-colors"
+        >
+          <Share2 className="h-4 w-4" />
+        </button>
+      </>
     );
   }
 
   return (
-    <Button
-      onClick={handleShare}
-      size="lg"
-      className="bg-gradient-to-r from-gold to-gold/80 text-background hover:opacity-90 rounded-xl px-6 font-semibold shadow-card-soft"
-    >
-      {copied ? <Check className="h-4 w-4" /> : <Share2 className="h-4 w-4" />}
-      {copied ? "Copied!" : "Share Result"}
-    </Button>
+    <>
+      {offscreenCard}
+      <Button
+        onClick={handleShare}
+        size="lg"
+        className="bg-gradient-to-r from-gold to-gold/80 text-background hover:opacity-90 rounded-xl px-6 font-semibold shadow-card-soft"
+      >
+        {copied ? <Check className="h-4 w-4" /> : <Share2 className="h-4 w-4" />}
+        {copied ? "Copied!" : "Share Text"}
+      </Button>
+      <Button
+        onClick={handleShareCard}
+        size="lg"
+        variant="outline"
+        disabled={generating}
+        className="border-gold/40 text-gold hover:bg-gold/10 hover:text-gold rounded-xl px-6 font-semibold"
+      >
+        <ImageIcon className="h-4 w-4" />
+        {generating ? "Generating..." : "Share Card"}
+      </Button>
+    </>
   );
 };
