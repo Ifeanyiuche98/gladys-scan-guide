@@ -1,7 +1,9 @@
-import { useState } from "react";
-import { Share2, Copy, Check } from "lucide-react";
+import { useRef, useState } from "react";
+import { Share2, Check, Image as ImageIcon } from "lucide-react";
+import { toPng } from "html-to-image";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
+import { ShareCard } from "./ShareCard";
 import type { ScanResult, Verdict } from "@/lib/scan-types";
 
 const verdictEmoji: Record<Verdict, string> = {
