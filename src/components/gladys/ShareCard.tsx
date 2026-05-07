@@ -89,10 +89,16 @@ export const ShareCard = forwardRef<HTMLDivElement, Props>(({ result }, ref) => 
         </div>
       </div>
 
+      {/* Self-check trigger */}
+      <div className="relative px-10 mt-4 text-center">
+        <p className="text-[13px] font-semibold text-white/85">Would your token pass this test?</p>
+        <p className="text-[11px] text-white/40 mt-0.5">Takes 5 seconds · Free to check</p>
+      </div>
+
       {/* Branding */}
-      <div className="relative px-10 py-6 flex items-center justify-between">
-        <div className="text-[11px] tracking-[0.3em] uppercase text-white/40">Analyzed by GLADYS</div>
-        <div className="text-[11px] text-white/30">scan before you ape</div>
+      <div className="relative px-10 pt-4 pb-6 flex items-center justify-between">
+        <div className="text-[10px] tracking-[0.3em] uppercase text-white/40">Analyzed by GLADYS</div>
+        <div className="text-[10px] text-white/30">Used by traders to spot risky tokens</div>
       </div>
     </div>
   );
