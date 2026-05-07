@@ -1051,12 +1051,22 @@ Deno.serve(async (req) => {
     let confidence = computeConfidence(market, classification);
     const outlook = computeOutlook(market, classification, riskScore);
 
+    // Canonical native asset override — BTC, ETH, SOL, etc. should always
+    // present with their native chain label and never be flagged as
+    // "multi-chain" or "network unknown". This runs BEFORE the network
+    // uncertainty check so canonical assets bypass the low-confidence penalty.
+    const canonical = getCanonicalNative(market);
+    if (canonical) {
+      market = { ...market, name: canonical.name, chain: canonical.chain };
+    }
+
     // Network safety: if we couldn't confidently identify the chain, force
     // confidence to Low and surface a visible warning. Never present a
     // full-confidence verdict when the network is unknown.
     const chainLower = (market.chain ?? "").toLowerCase();
     const networkUncertain =
-      !market.chain || chainLower === "unknown" || chainLower === "multi-chain";
+      !canonical &&
+      (!market.chain || chainLower === "unknown" || chainLower === "multi-chain");
     let networkWarning: string | undefined;
     if (networkUncertain) {
       confidence = "Low";
