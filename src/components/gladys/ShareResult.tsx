@@ -97,7 +97,7 @@ function buildShareText(result: ScanResult): string {
     ``,
     buildInterpretation(result),
     ``,
-    `Check it yourself:`,
+    `Would your token pass this test? Scan it (takes 5s):`,
     appLink,
   ].join("\n");
 }
