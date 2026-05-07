@@ -28,6 +28,39 @@ interface MarketSnapshot {
   categories?: string[];
 }
 
+// Canonical/native crypto assets — globally recognized layer-1 coins that are
+// NOT contract tokens. They should always resolve to their native chain label
+// with full confidence regardless of CoinGecko's `platforms` field (which is
+// often empty or "multi-chain" for these).
+// Keyed by uppercase symbol; also matched by CoinGecko id.
+const CANONICAL_NATIVE_ASSETS: Record<string, { name: string; chain: string; cgId: string }> = {
+  BTC:  { name: "Bitcoin",   chain: "Bitcoin Network", cgId: "bitcoin" },
+  ETH:  { name: "Ethereum",  chain: "Ethereum",        cgId: "ethereum" },
+  BNB:  { name: "BNB",       chain: "BNB Smart Chain", cgId: "binancecoin" },
+  SOL:  { name: "Solana",    chain: "Solana",          cgId: "solana" },
+  XRP:  { name: "XRP",       chain: "XRP Ledger",      cgId: "ripple" },
+  ADA:  { name: "Cardano",   chain: "Cardano",         cgId: "cardano" },
+  DOGE: { name: "Dogecoin",  chain: "Dogecoin",        cgId: "dogecoin" },
+  LTC:  { name: "Litecoin",  chain: "Litecoin",        cgId: "litecoin" },
+  TRX:  { name: "TRON",      chain: "TRON",            cgId: "tron" },
+  TON:  { name: "Toncoin",   chain: "TON",             cgId: "the-open-network" },
+  AVAX: { name: "Avalanche", chain: "Avalanche",       cgId: "avalanche-2" },
+  DOT:  { name: "Polkadot",  chain: "Polkadot",        cgId: "polkadot" },
+};
+
+// True only for the NATIVE asset, never for wrapped/tokenized variants
+// (which always carry a contract address).
+function getCanonicalNative(m: MarketSnapshot): { name: string; chain: string } | null {
+  if (m.address) return null; // wrapped/tokenized version → not canonical native
+  const sym = (m.symbol ?? "").toUpperCase();
+  const entry = CANONICAL_NATIVE_ASSETS[sym];
+  if (!entry) return null;
+  // Symbol must also match the canonical name (avoid copycats sharing a ticker).
+  const nameLower = (m.name ?? "").toLowerCase();
+  if (!nameLower.includes(entry.name.toLowerCase())) return null;
+  return { name: entry.name, chain: entry.chain };
+}
+
 // Heuristic: detect meme/speculative/hype-driven tokens from CoinGecko categories.
 function isMemeOrSpeculative(m: MarketSnapshot): boolean {
   const cats = (m.categories ?? []).map((c) => c.toLowerCase());
