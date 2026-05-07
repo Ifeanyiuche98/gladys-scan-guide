@@ -151,7 +151,9 @@ const Index = () => {
         setRemaining(getRemainingScans());
       }
       if (serverReset) setLimitResetTime(serverReset);
-      setResult(data as ScanResult);
+      const scanResult = data as ScanResult;
+      setRecents(addRecentScan(scanResult));
+      setResult(scanResult);
       setStatus("result");
     } catch (e) {
       // Network failure (no response received) or unexpected throw.
