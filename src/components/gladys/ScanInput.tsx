@@ -26,7 +26,7 @@ export const ScanInput = ({ onScan, disabled }: Props) => {
             <input
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder="Paste token name, contract, or link…"
+              placeholder="Paste token name or contract address…"
               className="flex-1 bg-transparent outline-none py-3 text-base placeholder:text-muted-foreground/70"
               autoComplete="off"
               spellCheck={false}
@@ -44,8 +44,13 @@ export const ScanInput = ({ onScan, disabled }: Props) => {
         </div>
       </div>
       <p className="text-xs text-muted-foreground text-center mt-3">
-        Works with CoinGecko links, Dexscreener links, or 0x… contract addresses
+        Get a quick risk breakdown before making a decision.
       </p>
+      <div className="flex flex-wrap justify-center items-center gap-x-4 gap-y-1.5 mt-3 text-[11px] sm:text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1"><span className="text-gold">✓</span> Contract-aware</span>
+        <span className="inline-flex items-center gap-1"><span className="text-gold">✓</span> Beginner-friendly</span>
+        <span className="inline-flex items-center gap-1"><span className="text-gold">✓</span> No wallet connection required</span>
+      </div>
     </form>
   );
 };

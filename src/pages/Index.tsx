@@ -185,18 +185,17 @@ const Index = () => {
 
       <main className="container max-w-3xl flex-1 pb-12">
         {status === "idle" && (
-          <section className="pt-8 sm:pt-16 animate-fade-up">
-            <div className="text-center mb-10 sm:mb-14">
-              <div className="flex justify-center mb-8">
+          <section className="pt-4 sm:pt-12 animate-fade-up">
+            <div className="text-center mb-6 sm:mb-10">
+              <div className="flex justify-center mb-5 sm:mb-7">
                 <Logo variant="full" size="lg" />
               </div>
-              <h1 className="font-display font-bold text-4xl sm:text-6xl tracking-tight leading-[1.05]">
-                Scan Before
-                <br />
-                You <span className="text-gradient-gold">Ape.</span>
+              <h1 className="font-display font-bold text-3xl sm:text-5xl tracking-tight leading-[1.1]">
+                Scan a crypto token <br className="hidden sm:block" />
+                <span className="text-gradient-gold">before you buy.</span>
               </h1>
-              <p className="text-muted-foreground mt-5 max-w-md mx-auto text-base sm:text-lg">
-                Instant safety + opportunity check on any crypto token — in plain English.
+              <p className="text-muted-foreground mt-4 max-w-md mx-auto text-sm sm:text-base">
+                GLADYS helps you spot risky, low-liquidity, and speculative tokens in seconds.
               </p>
             </div>
 
