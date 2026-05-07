@@ -4,7 +4,9 @@ import { ScanInput } from "@/components/gladys/ScanInput";
 import { Loader } from "@/components/gladys/Loader";
 import { Results } from "@/components/gladys/Results";
 import { Suggestions } from "@/components/gladys/Suggestions";
+import { RecentScans } from "@/components/gladys/RecentScans";
 import { UpgradeModal } from "@/components/gladys/UpgradeModal";
+import { addRecentScan, getRecentScans, type RecentScan } from "@/lib/recent-scans";
 import {
   canScan,
   recordScan,
@@ -26,6 +28,7 @@ const Index = () => {
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [remaining, setRemaining] = useState(getRemainingScans());
   const [suggestions, setSuggestions] = useState<{ message: string; items: TokenSuggestion[] } | null>(null);
+  const [recents, setRecents] = useState<RecentScan[]>(getRecentScans());
 
   const handleScan = async (input: string, opts?: { coingeckoId?: string }) => {
     if (!canScan()) {
@@ -148,7 +151,9 @@ const Index = () => {
         setRemaining(getRemainingScans());
       }
       if (serverReset) setLimitResetTime(serverReset);
-      setResult(data as ScanResult);
+      const scanResult = data as ScanResult;
+      setRecents(addRecentScan(scanResult));
+      setResult(scanResult);
       setStatus("result");
     } catch (e) {
       // Network failure (no response received) or unexpected throw.
@@ -209,6 +214,14 @@ const Index = () => {
                 onDismiss={() => setSuggestions(null)}
               />
             )}
+
+            <RecentScans
+              items={recents}
+              onPick={(item) => {
+                setResult(item.result);
+                setStatus("result");
+              }}
+            />
 
             <div className="grid sm:grid-cols-3 gap-4 mt-12">
               <Feature icon={ShieldCheck} title="Risk Score" body="Liquidity, whales, volatility — scored /100." />
