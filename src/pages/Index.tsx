@@ -4,7 +4,9 @@ import { ScanInput } from "@/components/gladys/ScanInput";
 import { Loader } from "@/components/gladys/Loader";
 import { Results } from "@/components/gladys/Results";
 import { Suggestions } from "@/components/gladys/Suggestions";
+import { RecentScans } from "@/components/gladys/RecentScans";
 import { UpgradeModal } from "@/components/gladys/UpgradeModal";
+import { addRecentScan, getRecentScans, type RecentScan } from "@/lib/recent-scans";
 import {
   canScan,
   recordScan,
