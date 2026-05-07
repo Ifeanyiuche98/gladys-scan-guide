@@ -28,6 +28,7 @@ const Index = () => {
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [remaining, setRemaining] = useState(getRemainingScans());
   const [suggestions, setSuggestions] = useState<{ message: string; items: TokenSuggestion[] } | null>(null);
+  const [recents, setRecents] = useState<RecentScan[]>(getRecentScans());
 
   const handleScan = async (input: string, opts?: { coingeckoId?: string }) => {
     if (!canScan()) {
