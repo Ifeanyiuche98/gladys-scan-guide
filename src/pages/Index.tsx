@@ -215,6 +215,14 @@ const Index = () => {
               />
             )}
 
+            <RecentScans
+              items={recents}
+              onPick={(item) => {
+                setResult(item.result);
+                setStatus("result");
+              }}
+            />
+
             <div className="grid sm:grid-cols-3 gap-4 mt-12">
               <Feature icon={ShieldCheck} title="Risk Score" body="Liquidity, whales, volatility — scored /100." />
               <Feature icon={Zap} title="Opportunity Signal" body="Spot early gems vs. overhyped traps." />
